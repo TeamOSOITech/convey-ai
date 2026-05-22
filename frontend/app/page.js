@@ -26,7 +26,7 @@ export default function Dashboard() {
 
   const fetchCases = async () => {
     try {
-      const res = await fetch('https://your-railway-url.up.railway.app/cases')
+      const res = await fetch('https://convey-ai-production.up.railway.app/cases')
       const data = await res.json()
       setCases(data.cases || [])
     } catch (err) {
@@ -40,7 +40,7 @@ export default function Dashboard() {
     if (!newTitleNumber.trim()) return
     setCreating(true)
     try {
-      const res = await fetch(`https://your-railway-url.up.railway.app/cases?title_number=${newTitleNumber}`, {
+      const res = await fetch(`https://convey-ai-production.up.railway.app/cases?title_number=${newTitleNumber}`, {
         method: 'POST'
       })
       const data = await res.json()
