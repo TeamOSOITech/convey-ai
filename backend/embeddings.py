@@ -6,9 +6,14 @@ from sentence_transformers import SentenceTransformer  # embedding model
 # Step 1: Load the embedding model
 # This runs locally on your machine — text never leaves your computer
 # First time this runs it will download the model (~500MB) — wait for it
-model = SentenceTransformer(
+"""model = SentenceTransformer(
     "BAAI/bge-large-en-v1.5",
     cache_folder="./models"      # saves model here permanently
+)"""
+
+model = SentenceTransformer(
+    "BAAI/bge-small-en-v1.5",   # smaller model — fits in Railway free tier
+    cache_folder="./models"
 )
 
 # Step 2: Create a ChromaDB client
