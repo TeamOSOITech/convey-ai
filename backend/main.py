@@ -14,6 +14,11 @@ from pydantic import BaseModel
 from typing import List, Optional
 from zip_processor import extract_zip
 
+# Create required folders if they don't exist
+# Railway starts with a clean filesystem so we need to create these
+os.makedirs("processed_pdfs", exist_ok=True)
+os.makedirs("chroma_db", exist_ok=True)
+
 app = FastAPI()
 
 app.add_middleware(
