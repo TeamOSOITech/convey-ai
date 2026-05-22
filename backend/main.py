@@ -120,7 +120,7 @@ async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN"
 
             # Build URL
             cleaned = make_clean_filename(doc["filename"])
-            file_url = f"http://localhost:8000/view-pdf/{cleaned}"
+            file_url = f"https://convey-ai-production.up.railway.app/view-pdf/{cleaned}"
 
             # Register in Supabase
             add_document(
@@ -178,7 +178,7 @@ async def upload_pdf(file: UploadFile = File(...), title_number: str = "UNKNOWN"
 
     # Step 5: Build the URL using the consistent clean filename function
     cleaned = make_clean_filename(file.filename)
-    download_url = f"http://localhost:8000/view-pdf/{cleaned}"
+    download_url = f"https://convey-ai-production.up.railway.app/view-pdf/{cleaned}"
 
     # Step 6: Make sure case exists in Supabase
     create_case(title_number)

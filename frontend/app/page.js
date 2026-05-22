@@ -7,7 +7,7 @@ export default function Home() {
   const { user, loading: authLoading } = useAuth()
 
   useEffect(() => {
-    fetch('http://localhost:8000/health')
+    fetch('https://convey-ai-production.up.railway.app/health')
       .then(res => res.json())
       .then(data => setStatus(data.status))
       .catch(() => setStatus('cannot reach backend'))

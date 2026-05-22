@@ -19,7 +19,7 @@ export default function CasePage() {
 
   const fetchCase = async () => {
     try {
-      const res = await fetch(`http://localhost:8000/cases/${titleNumber}`)
+      const res = await fetch(`https://convey-ai-production.up.railway.app/cases/${titleNumber}`)
       const data = await res.json()
       if (data.success) {
         setCaseData(data)
@@ -54,7 +54,7 @@ export default function CasePage() {
 
       if (type === 'question') {
         res = await fetch(
-          `http://localhost:8000/chat?title_number=${titleNumber}`,
+          `https://convey-ai-production.up.railway.app/chat?title_number=${titleNumber}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -73,7 +73,7 @@ export default function CasePage() {
 
       } else {
         res = await fetch(
-          `http://localhost:8000/raise-enquiry?title_number=${titleNumber}`,
+          `https://convey-ai-production.up.railway.app/raise-enquiry?title_number=${titleNumber}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -163,7 +163,7 @@ export default function CasePage() {
                   onClick={async (e) => {
                   e.stopPropagation()
                   if (!confirm('Delete this document? This cannot be undone.')) return
-                  await fetch(`http://localhost:8000/cases/${titleNumber}/documents/${doc.id}`, {
+                  await fetch(`https://convey-ai-production.up.railway.app/cases/${titleNumber}/documents/${doc.id}`, {
                     method: 'DELETE'
                   })
                   fetchCase()
