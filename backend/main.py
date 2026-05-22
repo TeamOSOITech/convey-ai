@@ -23,7 +23,9 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000",                    # local development
+        "https://https://convey-ai.vercel.app",       # your Vercel URL
+        "https://*.vercel.app"],                      # all Vercel preview URLs],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
