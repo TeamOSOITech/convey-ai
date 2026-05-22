@@ -11,6 +11,18 @@ export default function Dashboard() {
   const router = useRouter()
   const { user, loading: authLoading } = useAuth()
 
+  const fetchCases = async () => {
+    try {
+      const res = await fetch('https://convey-ai-production.up.railway.app/cases')
+      const data = await res.json()
+      setCases(data.cases || [])
+    } catch (err) {
+      console.error('Failed to fetch cases:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+  
   useEffect(() => {
     fetchCases()
   }, [])
@@ -24,17 +36,6 @@ export default function Dashboard() {
     )
   }
 
-  const fetchCases = async () => {
-    try {
-      const res = await fetch('https://convey-ai-production.up.railway.app/cases')
-      const data = await res.json()
-      setCases(data.cases || [])
-    } catch (err) {
-      console.error('Failed to fetch cases:', err)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const createCase = async () => {
     if (!newTitleNumber.trim()) return
