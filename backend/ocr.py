@@ -52,11 +52,11 @@ def process_pdf(input_pdf_bytes: bytes, filename: str) -> dict:
         ocrmypdf.ocr(
             input_path,
             output_path,
-            force_ocr=True,   # force OCR on every page no matter what
-            language="eng",   # english legal documents
-            optimize=0,        # skip image optimization to avoid errors
-            oversample=150,      # increases DPI for better small font recognition
-            #clean=True           # cleans up image noise before OCR
+            force_ocr=True,
+            language="eng",
+            optimize=0,
+            oversample=72,  # minimal memory usage for free tier
+            jobs=1,         # single threaded to reduce memory
         )
 
         # Step 5: Extract text from the OCR'd PDF
