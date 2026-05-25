@@ -1,5 +1,0 @@
-{
-  "deploy": {
-    "aptPkgs": ["tesseract-ocr", "ghostscript"]
-  }
-}
