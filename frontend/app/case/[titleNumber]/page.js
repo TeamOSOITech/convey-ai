@@ -187,37 +187,36 @@ export default function CasePage() {
         </div>
       </div>
 
-      {/* MIDDLE PANEL - PDF viewer */}
-      {/* MIDDLE PANEL */}
+
+{/* MIDDLE PANEL - inline PDF viewer using iframe */}
 <div className="flex-1 flex flex-col border-r border-gray-200 bg-white">
+
+  {/* Header shows the currently selected document name */}
   <div className="p-4 border-b border-gray-100">
     <p className="text-sm font-medium text-gray-700">
       {selectedDoc ? `${selectedDoc.doc_type} — ${selectedDoc.filename}` : 'No document selected'}
     </p>
   </div>
-  <div className="flex-1 flex items-center justify-center">
-    {selectedDoc ? (
-      <div className="text-center p-8">
-        <div className="w-16 h-16 bg-red-100 rounded-xl flex items-center justify-center mx-auto mb-4">
-          <span className="text-red-600 font-bold text-xl">PDF</span>
-        </div>
-        <p className="font-medium text-gray-800">{selectedDoc.doc_type}</p>
-        <p className="text-sm text-gray-400 mt-1">{selectedDoc.filename}</p>
-        <p className="text-xs text-gray-300 mt-1">
-          Uploaded {new Date(selectedDoc.uploaded_at).toLocaleDateString('en-GB')}
-        </p>
-        
-          <a href={selectedDoc.file_url}
-          target="_blank"
-          className="mt-6 inline-block bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
-        >
-          Open Document
-        </a>
-      </div>
+
+  {/* PDF viewer — fills remaining height */}
+  <div className="flex-1 overflow-hidden">
+    {selectedDoc && selectedDoc.file_url ? (
+      // iframe points to Railway /view-pdf/ endpoint
+      // that endpoint serves the OCR'd PDF with Content-Disposition: inline
+      // so the browser renders it directly instead of downloading
+      <iframe
+        src={selectedDoc.file_url}
+        className="w-full h-full border-0"
+        title={selectedDoc.filename}
+      />
     ) : (
-      <p className="text-gray-300">Select a document from the left panel</p>
+      // shown when no doc is selected or file_url is missing
+      <div className="flex items-center justify-center h-full">
+        <p className="text-gray-300 text-sm">Select a document from the left panel</p>
+      </div>
     )}
   </div>
+
 </div>
 
       {/* RIGHT PANEL - Chatbot */}
