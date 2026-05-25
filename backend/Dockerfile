@@ -4,9 +4,9 @@ FROM jbarlow83/ocrmypdf
 # Set working directory
 WORKDIR /app
 
-# Install Python dependencies
+# Install pip then dependencies
 COPY requirements.txt .
-RUN pip3 install -r requirements.txt
+RUN python3 -m ensurepip && python3 -m pip install -r requirements.txt
 
 # Copy all backend files
 COPY . .
