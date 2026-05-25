@@ -1,3 +1,5 @@
 {
-  "systemPackages": ["tesseract-ocr", "ghostscript"]
+  "deploy": {
+    "aptPkgs": ["tesseract-ocr", "ghostscript"]
+  }
 }
