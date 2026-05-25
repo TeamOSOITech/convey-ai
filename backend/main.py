@@ -56,9 +56,7 @@ def make_clean_filename(filename: str) -> str:
 
 @app.get("/view-pdf/{filename}")
 async def view_pdf(filename: str):
-    """Serves PDF inline in browser instead of downloading"""
     file_path = f"processed_pdfs/{filename}"
-    print(f"Looking for file: {file_path}")  # debug — shows exact path in terminal
     if not os.path.exists(file_path):
         return {"error": "File not found", "looked_for": file_path}
     return FileResponse(
@@ -67,7 +65,8 @@ async def view_pdf(filename: str):
         headers={
             "Content-Disposition": "inline; filename=" + filename,
             "Content-Type": "application/pdf",
-            "X-Frame-Options": "SAMEORIGIN",
+            # remove X-Frame-Options restriction so iframe can load it
+            "X-Frame-Options": "ALLOWALL",
             "Access-Control-Allow-Origin": "*"
         }
     )
