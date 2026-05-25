@@ -1,10 +1,5 @@
-FROM python:3.11-slim
-
-# Install tesseract and ghostscript via apt
-RUN apt-get update && apt-get install -y \
-    tesseract-ocr \
-    ghostscript \
-    && rm -rf /var/lib/apt/lists/*
+# Use ocrmypdf's official image which already has tesseract + ghostscript
+FROM jbarlow83/ocrmypdf
 
 # Set working directory
 WORKDIR /app
@@ -16,4 +11,5 @@ RUN pip install -r requirements.txt
 # Copy all backend files
 COPY . .
 
+# Start the server
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
