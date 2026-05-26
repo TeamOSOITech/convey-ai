@@ -26,7 +26,7 @@ app.add_middleware(
     allow_origin_regex=r"https://.*\.vercel\.app",  # regex — matches ALL *.vercel.app URLs
     allow_origins=[
         "http://localhost:3000",           # local development
-        "https://convey-ai.vercel.app",    # production Vercel URL
+        "https://convey-ai-mauve.vercel.app",    # production Vercel URL
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -123,7 +123,7 @@ async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN"
 
             # Build URL
             cleaned = make_clean_filename(doc["filename"])
-            file_url = f"https://convey-ai-production.up.railway.app/view-pdf/{cleaned}"
+            file_url = f"https://convey-ai-production-be43.up.railway.app/view-pdf/{cleaned}"
 
             # Register in Supabase
             add_document(
@@ -181,7 +181,7 @@ async def upload_pdf(file: UploadFile = File(...), title_number: str = "UNKNOWN"
 
     # Step 5: Build the URL using the consistent clean filename function
     cleaned = make_clean_filename(file.filename)
-    download_url = f"https://convey-ai-production.up.railway.app/view-pdf/{cleaned}"
+    download_url = f"https://convey-ai-production-be43.up.railway.app/view-pdf/{cleaned}"
 
     # Step 6: Make sure case exists in Supabase
     create_case(title_number)
