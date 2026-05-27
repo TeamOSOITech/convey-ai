@@ -13,7 +13,7 @@ export default function Dashboard() {
 
   const fetchCases = async () => {
     try {
-      const res = await fetch('${process.env.NEXT_PUBLIC_BACKEND_URL}/cases')
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/cases`)
       const data = await res.json()
       setCases(data.cases || [])
     } catch (err) {
