@@ -19,7 +19,11 @@ export default function CasePage() {
 
   const fetchCase = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}`)
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}`, {
+      headers: {
+        'ngrok-skip-browser-warning': 'true'
+        }
+      })
       const data = await res.json()
       if (data.success) {
         setCaseData(data)
@@ -57,7 +61,9 @@ export default function CasePage() {
           `${process.env.NEXT_PUBLIC_BACKEND_URL}/chat?title_number=${titleNumber}`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json',
+                      'ngrok-skip-browser-warning': 'true'
+             },
             body: JSON.stringify({
               question: userMessage,
               history: history  // send full history
@@ -76,7 +82,7 @@ export default function CasePage() {
           `${process.env.NEXT_PUBLIC_BACKEND_URL}/raise-enquiry?title_number=${titleNumber}`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' , 'ngrok-skip-browser-warning': 'true' },
             body: JSON.stringify({
               issue: userMessage,
               history: history  // send full history
@@ -164,7 +170,10 @@ export default function CasePage() {
                   e.stopPropagation()
                   if (!confirm('Delete this document? This cannot be undone.')) return
                   await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}/documents/${doc.id}`, {
-                    method: 'DELETE'
+                    method: 'DELETE',
+                    headers: {
+                      'ngrok-skip-browser-warning': 'true'
+                    }
                   })
                   fetchCase()
                 }}

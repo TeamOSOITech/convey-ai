@@ -31,7 +31,11 @@ export default function UploadPage() {
       // Send file + title number + doc type to backend
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_BACKEND_URL}/upload-pdf?title_number=${titleNumber}&doc_type=${docType}`,
-        { method: 'POST', body: formData }
+        { method: 'POST', body: formData , 
+          headers: {
+            'ngrok-skip-browser-warning': 'true'
+          }
+        }
       )
       const data = await res.json()
 

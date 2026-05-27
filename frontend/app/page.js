@@ -13,7 +13,11 @@ export default function Dashboard() {
 
   const fetchCases = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/cases`)
+      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/cases`, {
+        headers: {
+          'ngrok-skip-browser-warning': 'true'
+        }
+    })
       const data = await res.json()
       setCases(data.cases || [])
     } catch (err) {
@@ -42,7 +46,10 @@ export default function Dashboard() {
     setCreating(true)
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/cases?title_number=${newTitleNumber}`, {
-        method: 'POST'
+        method: 'POST',
+        headers: {
+        'ngrok-skip-browser-warning': 'true'
+        }
       })
       const data = await res.json()
       if (data.success) {
