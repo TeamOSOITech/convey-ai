@@ -12,14 +12,13 @@ from sentence_transformers import SentenceTransformer  # embedding model
 )"""
 
 model = SentenceTransformer(
-    "BAAI/bge-small-en-v1.5",   # smaller model — fits in Railway free tier
+    "BAAI/bge-large-en-v1.5",   # smaller model — fits in Railway free tier
     cache_folder="./models"
 )
 
 # Step 2: Create a ChromaDB client
 # persist_directory means data is saved to disk, not lost when server restarts
-client = chromadb.PersistentClient(path="./chroma_db")
-
+client = chromadb.PersistentClient(path="/app/data/chroma_db")
 # Step 3: Create our 3 collections (namespaces)
 # get_or_create means it won't crash if collection already exists
 
