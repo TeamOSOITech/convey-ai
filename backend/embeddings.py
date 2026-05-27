@@ -2,6 +2,7 @@
 
 import chromadb                                    # our vector database
 from sentence_transformers import SentenceTransformer  # embedding model
+import os
 
 # Step 1: Load the embedding model
 # This runs locally on your machine — text never leaves your computer
