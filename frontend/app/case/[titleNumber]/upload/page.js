@@ -30,7 +30,7 @@ export default function UploadPage() {
     try {
       // Send file + title number + doc type to backend
       const res = await fetch(
-        `https://convey-ai-production-be43.up.railway.app/upload-pdf?title_number=${titleNumber}&doc_type=${docType}`,
+        `${process.env.NEXT_PUBLIC_BACKEND_URL}/upload-pdf?title_number=${titleNumber}&doc_type=${docType}`,
         { method: 'POST', body: formData }
       )
       const data = await res.json()
