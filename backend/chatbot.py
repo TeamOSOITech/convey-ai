@@ -20,7 +20,7 @@ def ask_question(question: str, title_number: str, history: list = []) -> dict:
     search_results = search_case(
         query=question,
         title_number=title_number,
-        n_results=8
+        n_results=15
     )
     relevant_chunks = search_results["documents"][0]
     context = "\n\n".join(relevant_chunks)

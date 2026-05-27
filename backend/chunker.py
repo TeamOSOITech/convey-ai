@@ -15,7 +15,7 @@ def chunk_text(text: str, source_filename: str) -> list:
     # e.g. if a sentence starts at end of chunk 1, it also appears at start of chunk 2
     splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,    # bigger chunks = more context kept together
-    chunk_overlap=200,  # bigger overlap = less chance of losing context
+    chunk_overlap=500,  # bigger overlap = less chance of losing context
     separators=["\n\n", "\n", ".", " "]
     )
 
