@@ -77,7 +77,12 @@ def make_clean_filename(filename: str) -> str:
     
     return cleaned
 
-
+@app.post("/ingest-formats")
+async def ingest_formats_route():
+    """One-time route to populate format library in ChromaDB — delete after use"""
+    from ingest_formats import ingest_all_enquiries
+    ingest_all_enquiries()
+    return {"success": True, "message": "Format library ingested"}
 
 @app.get("/view-pdf/{filename}")
 async def view_pdf(filename: str):
