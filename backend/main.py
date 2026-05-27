@@ -32,12 +32,18 @@ Then in Railway Variables add:
 DATA_DIR=/app/data
 Locally it uses ./data, on Railway it uses /app/data. Clean and portable."""
 
+# Set data directory — uses /app/data on Railway, ./data locally
 DATA_DIR = os.getenv("DATA_DIR", "./data")
+
+# Create required folders
 os.makedirs(f"{DATA_DIR}/processed_pdfs", exist_ok=True)
-app.mount("/processed", StaticFiles(directory=f"{DATA_DIR}/processed_pdfs"), name="processed")
 os.makedirs(f"{DATA_DIR}/chroma_db", exist_ok=True)
 
+# Create FastAPI app BEFORE mounting anything
 app = FastAPI()
+
+# Mount static files AFTER app is created
+app.mount("/processed", StaticFiles(directory=f"{DATA_DIR}/processed_pdfs"), name="processed")
 
 app.add_middleware(
     CORSMiddleware,
