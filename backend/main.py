@@ -96,7 +96,7 @@ async def view_pdf(filename: str):
         }
     )
 
-app.mount("/processed", StaticFiles(directory="processed_pdfs"), name="processed")
+app.mount("/processed", StaticFiles(directory=f"{DATA_DIR}/processed_pdfs"), name="processed")
 
 @app.get("/")
 def home():
