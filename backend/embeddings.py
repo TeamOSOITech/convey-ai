@@ -18,7 +18,8 @@ model = SentenceTransformer(
 
 # Step 2: Create a ChromaDB client
 # persist_directory means data is saved to disk, not lost when server restarts
-client = chromadb.PersistentClient(path="/app/data/chroma_db")
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+client = chromadb.PersistentClient(path=f"{DATA_DIR}/chroma_db")
 # Step 3: Create our 3 collections (namespaces)
 # get_or_create means it won't crash if collection already exists
 

@@ -16,8 +16,25 @@ from zip_processor import extract_zip
 
 # Create required folders if they don't exist
 # Railway starts with a clean filesystem so we need to create these
-os.makedirs("/app/data/processed_pdfs", exist_ok=True)
-os.makedirs("/app/data/chroma_db", exist_ok=True)
+
+"""In embeddings.py:
+pythonDATA_DIR = os.getenv("DATA_DIR", "./data")
+client = chromadb.PersistentClient(path=f"{DATA_DIR}/chroma_db")
+In ocr.py:
+pythonDATA_DIR = os.getenv("DATA_DIR", "./data")
+PROCESSED_FOLDER = f"{DATA_DIR}/processed_pdfs"
+In main.py:
+pythonDATA_DIR = os.getenv("DATA_DIR", "./data")
+os.makedirs(f"{DATA_DIR}/processed_pdfs", exist_ok=True)
+os.makedirs(f"{DATA_DIR}/chroma_db", exist_ok=True)
+Then in Railway Variables add:
+DATA_DIR=/app/data
+Locally it uses ./data, on Railway it uses /app/data. Clean and portable."""
+
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+os.makedirs(f"{DATA_DIR}/processed_pdfs", exist_ok=True)
+app.mount("/processed", StaticFiles(directory=f"{DATA_DIR}/processed_pdfs"), name="processed")
+os.makedirs(f"{DATA_DIR}/chroma_db", exist_ok=True)
 
 app = FastAPI()
 

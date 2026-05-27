@@ -9,7 +9,8 @@ from PIL import ImageFile # type: ignore
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # This is the folder where we permanently save OCR'd PDFs
-PROCESSED_FOLDER = "/app/data/processed_pdfs"
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+PROCESSED_FOLDER = f"{DATA_DIR}/processed_pdfs"
 
 def process_pdf(input_pdf_bytes: bytes, filename: str) -> dict:
     """
