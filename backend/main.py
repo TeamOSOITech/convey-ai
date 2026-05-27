@@ -81,7 +81,8 @@ def make_clean_filename(filename: str) -> str:
 
 @app.get("/view-pdf/{filename}")
 async def view_pdf(filename: str):
-    file_path = f"processed_pdfs/{filename}"
+    # Use DATA_DIR so it works both locally and on Railway volume
+    file_path = f"{DATA_DIR}/processed_pdfs/{filename}"
     if not os.path.exists(file_path):
         return {"error": "File not found", "looked_for": file_path}
     return FileResponse(
@@ -90,7 +91,6 @@ async def view_pdf(filename: str):
         headers={
             "Content-Disposition": "inline; filename=" + filename,
             "Content-Type": "application/pdf",
-            # remove X-Frame-Options restriction so iframe can load it
             "X-Frame-Options": "ALLOWALL",
             "Access-Control-Allow-Origin": "*"
         }
