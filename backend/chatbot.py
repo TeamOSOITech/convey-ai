@@ -290,7 +290,7 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
         # 1. Search ONLY in the currently opened document
         current_results = case_collection.query(
             query_embeddings=query_embedding,  # Changed from query_texts
-            n_results=3,
+            n_results=5,
             where={"$and": [
                 {"title_number": title_number}, 
                 {"filename": current_document}
@@ -302,7 +302,7 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
         # 2. Search in the REST of the case documents
         other_results = case_collection.query(
             query_embeddings=query_embedding, # Changed from query_texts
-            n_results=5,
+            n_results=8,
             where={"$and": [
                 {"title_number": title_number}, 
                 {"filename": {"$ne": current_document}}
@@ -314,20 +314,21 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
         # Fallback: Search all documents if none is open
         results = case_collection.query(
             query_embeddings=query_embedding, # Changed from query_texts
-            n_results=8,
+            n_results=15,
             where={"title_number": title_number}
         )
         if results["documents"] and len(results["documents"][0]) > 0:
             other_docs_context = "\n\n".join(results["documents"][0])
 
     system_prompt = f"""You are an expert UK conveyancing legal assistant AI.
-Your role is to answer questions based strictly on the extracted case documents.
+Your role is to answer questions based strictly on the extracted case documents. You help solicitors and legal employees understand property documents.
 
 PRIORITY RULES:
 1. FIRST, attempt to answer the question using ONLY the facts in the [CURRENTLY OPEN DOCUMENT CONTEXT].
 2. If (and only if) the answer is completely missing from the open document, fallback to the [OTHER CASE DOCUMENTS CONTEXT].
 3. If the answer is found, state it directly. Never use phrases like "Based on the documents...".
 4. If the answer is in neither context, reply: "I cannot find this information in the case documents."
+5. Use UK legal terminology.
 
 [CURRENTLY OPEN DOCUMENT CONTEXT]
 {current_doc_context if current_doc_context else "None available."}
@@ -347,7 +348,7 @@ PRIORITY RULES:
     groq_messages.append({"role": "user", "content": question})
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama3-8b-8192",
         messages=groq_messages,
         max_tokens=2048
     )
@@ -421,13 +422,15 @@ def raise_enquiry(issue: str, title_number: str, history: list = [], current_doc
     system_prompt = f"""You are a senior UK conveyancing solicitor drafting formal legal enquiries to the seller's solicitors.
 
 TASK:
-Draft a formal enquiry combining the standard wording from the FORMAT LIBRARY with the specific facts from the CASE CONTEXT.
+Draft a formal enquiry combining the standard wording from the FORMAT LIBRARY with the specific facts from the CASE CONTEXT. You help solicitors and legal employees understand property documents.
 
 PRIORITY RULES:
 1. When filling in dates, names, or values, look FIRST in the [CASE FACTS - CURRENTLY OPEN DOCUMENT].
 2. If the missing facts are not there, look in the [CASE FACTS - OTHER DOCUMENTS].
-3. Tone must be highly formal, polite, but firm. Draft ONLY the text of the enquiry itself.
-4. If the case context completely lacks the necessary facts to complete the standard format, state: "INCOMPLETE FACTS: Cannot draft enquiry. Missing [State what is missing]."
+3. If you cannot find a specific value, keep the placeholder but flag it with [PLEASE COMPLETE].
+4. Tone must be highly formal, polite, but firm. Draft ONLY the text of the enquiry itself.
+5. If the case context completely lacks the necessary facts to complete the standard format, state: "INCOMPLETE FACTS: Cannot draft enquiry. Missing [State what is missing]."
+6. Use UK legal terminology.
 
 FORMAT LIBRARY REFERENCE:
 {format_context if format_context else "No standard format found. Draft manually based on facts."}
