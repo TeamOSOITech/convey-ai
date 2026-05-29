@@ -71,15 +71,14 @@ export default function Dashboard() {
       if (zipFile) {
         // Path 1: User uploaded a ZIP - route to the heavy processor
         const formData = new FormData()
-        formData.append('title_number', formattedTitle)
-        formData.append('file', zipFile)
+        formData.append('file', zipFile) // Only append the file to the body
 
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/upload-zip`, {
+        // CRITICAL FIX: Pass the title_number in the URL query string here
+        const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/upload-zip?title_number=${formattedTitle}`, {
           method: 'POST',
           body: formData,
           headers: {
             'ngrok-skip-browser-warning': 'true'
-            // NO Content-Type header here - browser handles the multipart boundary
           }
         })
         
