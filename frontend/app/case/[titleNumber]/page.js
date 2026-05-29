@@ -283,7 +283,7 @@ export default function CasePage() {
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask a question or describe an issue..."
             rows={3}
-            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+            className="w-full border text-black border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
           />
           <div className="flex gap-2 mt-2">
             <button
