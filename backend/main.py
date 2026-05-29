@@ -236,15 +236,22 @@ async def upload_pdf(file: UploadFile = File(...), title_number: str = "UNKNOWN"
 class ChatRequest(BaseModel):
     question: str
     history: Optional[List[dict]] = []  # conversation history
+    current_document: Optional[str] = None  # Add this new field!
 
 class EnquiryRequest(BaseModel):
     issue: str
     history: Optional[List[dict]] = []  # conversation history
+    current_document: Optional[str] = None  # Add this new field!
 
 @app.post("/chat")
 async def chat(title_number: str, request: ChatRequest):
-    """General Q&A with conversation memory"""
-    result = ask_question(request.question, title_number, request.history)
+    """General Q&A prioritizing the current document"""
+    result = ask_question(
+        request.question, 
+        title_number, 
+        request.history, 
+        request.current_document # Pass it to chatbot.py
+    )
     return result
 
 @app.get("/search-formats")
@@ -265,8 +272,13 @@ async def search_formats_route(query: str):
 
 @app.post("/raise-enquiry")
 async def raise_enquiry_route(title_number: str, request: EnquiryRequest):
-    """Raises enquiry with conversation memory"""
-    result = raise_enquiry(request.issue, title_number, request.history)
+    """Raises enquiry with conversation memory, prioritizing current document"""
+    result = raise_enquiry(
+        request.issue, 
+        title_number, 
+        request.history, 
+        request.current_document # Pass it to the chatbot logic
+    )
     return result
 
 @app.post("/cases")

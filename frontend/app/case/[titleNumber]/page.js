@@ -36,6 +36,79 @@ export default function CasePage() {
     }
   }
 
+  // const sendMessage = async (type) => {
+  //   if (!input.trim()) return
+  //   const userMessage = input
+  //   setInput('')
+
+  //   // Add user message to chat history
+  //   const newMessages = [...messages, { role: 'user', content: userMessage }]
+  //   setMessages(newMessages)
+  //   setLoading(true)
+
+  //   try {
+  //     let res, data
+
+  //     // Build conversation history to send to backend
+  //     // This is what gives the AI memory of previous messages
+  //     const history = newMessages.map(msg => ({
+  //       role: msg.role,
+  //       content: msg.content
+  //     }))
+
+  //     if (type === 'question') {
+  //       res = await fetch(
+  //         `${process.env.NEXT_PUBLIC_BACKEND_URL}/chat?title_number=${titleNumber}`,
+  //         {
+  //           method: 'POST',
+  //           headers: { 'Content-Type': 'application/json',
+  //                     'ngrok-skip-browser-warning': 'true'
+  //            },
+  //           body: JSON.stringify({
+  //             question: userMessage,
+  //             history: history  // send full history
+  //           })
+  //         }
+  //       )
+  //       data = await res.json()
+  //       setMessages(prev => [...prev, {
+  //         role: 'assistant',
+  //         type: 'answer',
+  //         content: data.answer
+  //       }])
+
+  //     } else {
+  //       res = await fetch(
+  //         `${process.env.NEXT_PUBLIC_BACKEND_URL}/raise-enquiry?title_number=${titleNumber}`,
+  //         {
+  //           method: 'POST',
+  //           headers: { 'Content-Type': 'application/json' , 'ngrok-skip-browser-warning': 'true' },
+  //           body: JSON.stringify({
+  //             issue: userMessage,
+  //             history: history  // send full history
+  //           })
+  //         }
+  //       )
+  //       data = await res.json()
+  //       setMessages(prev => [...prev, {
+  //         role: 'assistant',
+  //         type: 'enquiry',
+  //         content: data.generated_text,
+  //         enquiry_code: data.enquiry_code,
+  //         enquiry_topic: data.enquiry_topic
+  //       }])
+  //     }
+
+  //   } catch (err) {
+  //     setMessages(prev => [...prev, {
+  //       role: 'assistant',
+  //       type: 'error',
+  //       content: 'Something went wrong. Please try again.'
+  //     }])
+  //   } finally {
+  //     setLoading(false)
+  //   }
+  // }
   const sendMessage = async (type) => {
     if (!input.trim()) return
     const userMessage = input
@@ -61,12 +134,15 @@ export default function CasePage() {
           `${process.env.NEXT_PUBLIC_BACKEND_URL}/chat?title_number=${titleNumber}`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json',
-                      'ngrok-skip-browser-warning': 'true'
-             },
+            headers: { 
+              'Content-Type': 'application/json',
+              'ngrok-skip-browser-warning': 'true'
+            },
             body: JSON.stringify({
               question: userMessage,
-              history: history  // send full history
+              history: history,
+              // CRITICAL ADDITION: Tell the backend which document is on screen
+              current_document: selectedDoc ? selectedDoc.filename : null
             })
           }
         )
@@ -82,10 +158,15 @@ export default function CasePage() {
           `${process.env.NEXT_PUBLIC_BACKEND_URL}/raise-enquiry?title_number=${titleNumber}`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' , 'ngrok-skip-browser-warning': 'true' },
+            headers: { 
+              'Content-Type': 'application/json', 
+              'ngrok-skip-browser-warning': 'true' 
+            },
             body: JSON.stringify({
               issue: userMessage,
-              history: history  // send full history
+              history: history,
+              // CRITICAL ADDITION: Tell the backend which document is on screen
+              current_document: selectedDoc ? selectedDoc.filename : null
             })
           }
         )
