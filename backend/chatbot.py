@@ -264,11 +264,12 @@
 
 # chatbot.py — handles all AI chat functionality
 
+
 import os
 from groq import Groq
 from dotenv import load_dotenv
-# We now import the collections directly to do advanced filtering
-from embeddings import case_collection, format_collection 
+# Added 'model' to the import list
+from embeddings import case_collection, format_collection, model
 
 load_dotenv()
 
@@ -282,10 +283,13 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
     current_doc_context = ""
     other_docs_context = ""
 
+    # CRITICAL FIX: Encode the text using YOUR specific model before searching
+    query_embedding = model.encode([question]).tolist()
+
     if current_document:
         # 1. Search ONLY in the currently opened document
         current_results = case_collection.query(
-            query_texts=[question],
+            query_embeddings=query_embedding,  # Changed from query_texts
             n_results=3,
             where={"$and": [
                 {"title_number": title_number}, 
@@ -297,7 +301,7 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
 
         # 2. Search in the REST of the case documents
         other_results = case_collection.query(
-            query_texts=[question],
+            query_embeddings=query_embedding, # Changed from query_texts
             n_results=5,
             where={"$and": [
                 {"title_number": title_number}, 
@@ -309,7 +313,7 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
     else:
         # Fallback: Search all documents if none is open
         results = case_collection.query(
-            query_texts=[question],
+            query_embeddings=query_embedding, # Changed from query_texts
             n_results=8,
             where={"title_number": title_number}
         )
@@ -334,7 +338,6 @@ PRIORITY RULES:
 
     groq_messages = [{"role": "system", "content": system_prompt}]
     
-    # Add previous messages from history (excluding the current question)
     for msg in history[:-1]:
         groq_messages.append({
             "role": msg["role"],
@@ -361,9 +364,12 @@ def raise_enquiry(issue: str, title_number: str, history: list = [], current_doc
     """
     Generates case-specific enquiry text with conversation memory and Context-Weighted RAG
     """
+    # CRITICAL FIX: Encode the text using YOUR specific model before searching
+    query_embedding = model.encode([issue]).tolist()
+
     # 1. Fetch format template
     format_results = format_collection.query(
-        query_texts=[issue],
+        query_embeddings=query_embedding, # Changed from query_texts
         n_results=1
     )
     format_context = ""
@@ -383,7 +389,7 @@ def raise_enquiry(issue: str, title_number: str, history: list = [], current_doc
 
     if current_document:
         current_results = case_collection.query(
-            query_texts=[issue],
+            query_embeddings=query_embedding, # Changed from query_texts
             n_results=3,
             where={"$and": [
                 {"title_number": title_number}, 
@@ -394,7 +400,7 @@ def raise_enquiry(issue: str, title_number: str, history: list = [], current_doc
             current_doc_context = "\n\n".join(current_results["documents"][0])
 
         other_results = case_collection.query(
-            query_texts=[issue],
+            query_embeddings=query_embedding, # Changed from query_texts
             n_results=5,
             where={"$and": [
                 {"title_number": title_number}, 
@@ -405,7 +411,7 @@ def raise_enquiry(issue: str, title_number: str, history: list = [], current_doc
             other_docs_context = "\n\n".join(other_results["documents"][0])
     else:
         results = case_collection.query(
-            query_texts=[issue],
+            query_embeddings=query_embedding, # Changed from query_texts
             n_results=8,
             where={"title_number": title_number}
         )
