@@ -456,7 +456,7 @@ FORMAT LIBRARY REFERENCE:
     })
 
     response = client.chat.completions.create(
-        model="gemma2-9b-it",
+        model="llama-3.1-8b-instant",
         messages=groq_messages,
         max_tokens=2048
     )
