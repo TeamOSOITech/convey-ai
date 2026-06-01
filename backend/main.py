@@ -405,3 +405,40 @@ async def debug_chunks(title_number: str):
         "ids": results["ids"],
         "metadatas": results["metadatas"]  # this shows all stored keys + values
     }
+
+@app.get("/debug-query/{title_number}")
+async def debug_query(title_number: str, question: str, current_document: str = None):
+    """
+    Temporary debug — shows exactly what chunks the chatbot would retrieve
+    for a given question and open document
+    """
+    from embeddings import model
+    
+    query_embedding = model.encode([question]).tolist()
+    tn = title_number.upper()
+    
+    # What it finds in the current doc
+    current_results = {"documents": [[]], "metadatas": [[]]}
+    if current_document:
+        current_results = case_collection.query(
+            query_embeddings=query_embedding,
+            n_results=3,
+            where={"$and": [
+                {"title_number": tn},
+                {"source": current_document}
+            ]}
+        )
+    
+    # What it finds in other docs
+    other_results = case_collection.query(
+        query_embeddings=query_embedding,
+        n_results=3,
+        where={"title_number": tn}
+    )
+    
+    return {
+        "title_number_queried": tn,
+        "current_document_filter": current_document,
+        "current_doc_chunks": current_results["documents"][0],
+        "other_chunks": other_results["documents"][0]
+    }
