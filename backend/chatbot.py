@@ -298,7 +298,7 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
         # FIX: metadata key is "source" (set in chunker.py), NOT "filename"
         current_results = case_collection.query(
             query_embeddings=query_embedding,
-            n_results=5,
+            n_results=8,
             where={"$and": [
                 {"title_number": title_number},
                 {"source": current_document}   # ← was "filename", now "source"
@@ -312,7 +312,7 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
         # $ne = "not equal" — excludes the currently open doc
         other_results = case_collection.query(
             query_embeddings=query_embedding,
-            n_results=8,
+            n_results=12,
             where={"$and": [
                 {"title_number": title_number},
                 {"source": {"$ne": current_document}}  # ← was "filename", now "source"
