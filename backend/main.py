@@ -442,3 +442,12 @@ async def debug_query(title_number: str, question: str, current_document: str = 
         "current_doc_chunks": current_results["documents"][0],
         "other_chunks": other_results["documents"][0]
     }
+@app.get("/debug-sources/{title_number}")
+async def debug_sources(title_number: str):
+    """Shows all unique document source names stored in ChromaDB for this case"""
+    results = case_collection.get(
+        where={"title_number": title_number.upper()}
+    )
+    # Extract unique source values from all metadata
+    sources = list(set(m["source"] for m in results["metadatas"]))
+    return {"title_number": title_number.upper(), "sources": sources}
