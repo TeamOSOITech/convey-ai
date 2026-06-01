@@ -299,33 +299,94 @@ async def get_case_route(title_number: str):
     result = get_case(title_number)
     return result
 
+# @app.delete("/cases/{title_number}/documents/{document_id}")
+# async def delete_document_route(title_number: str, document_id: str):
+#     """
+#     Deletes a document completely:
+#     1. Removes record from Supabase
+#     2. Deletes OCR'd PDF from disk
+#     3. Removes chunks from ChromaDB
+#     """
+#     # Step 1: Delete from Supabase and get the filename back
+#     result = delete_document(document_id, title_number)
+#     if not result["success"]:
+#         return result
+
+#     # Step 2: Delete the OCR'd PDF file from disk
+#     cleaned = make_clean_filename(result["filename"])
+#     file_path = f"processed_pdfs/{cleaned}"
+#     if os.path.exists(file_path):
+#         os.remove(file_path)
+#         print(f"Deleted file: {file_path}")
+
+#     # Step 3: Delete all ChromaDB chunks for this case document
+#     try:
+#         all_chunks = case_collection.get(where={"title_number": title_number})
+#         if all_chunks["ids"]:
+#             case_collection.delete(ids=all_chunks["ids"])
+#             print(f"Deleted {len(all_chunks['ids'])} chunks from ChromaDB")
+#     except Exception as e:
+#         print(f"ChromaDB cleanup error: {e}")
+
+#     return {"success": True, "message": "Document deleted completely"}
+
 @app.delete("/cases/{title_number}/documents/{document_id}")
 async def delete_document_route(title_number: str, document_id: str):
     """
     Deletes a document completely:
-    1. Removes record from Supabase
-    2. Deletes OCR'd PDF from disk
-    3. Removes chunks from ChromaDB
+    1. Removes record from Supabase (returns the original filename)
+    2. Deletes OCR'd PDF from disk using DATA_DIR
+    3. Removes ONLY this document's chunks from ChromaDB (filter by "source" key)
     """
-    # Step 1: Delete from Supabase and get the filename back
+    # Step 1: Delete from Supabase — returns the original filename so we know what to clean up
     result = delete_document(document_id, title_number)
     if not result["success"]:
         return result
 
-    # Step 2: Delete the OCR'd PDF file from disk
-    cleaned = make_clean_filename(result["filename"])
-    file_path = f"processed_pdfs/{cleaned}"
+    original_filename = result["filename"]  # e.g. "Contract Pack.pdf"
+
+    # Step 2: Delete the OCR'd PDF from disk
+    # FIX: use DATA_DIR so this works on Railway volume, not just locally
+    cleaned = make_clean_filename(original_filename)
+    file_path = f"{DATA_DIR}/processed_pdfs/{cleaned}"  # was hardcoded "processed_pdfs/"
     if os.path.exists(file_path):
         os.remove(file_path)
         print(f"Deleted file: {file_path}")
+    else:
+        print(f"File not found on disk (already deleted?): {file_path}")
 
-    # Step 3: Delete all ChromaDB chunks for this case document
+    # Step 3: Delete ONLY this document's chunks from ChromaDB
+    # FIX: filter by BOTH title_number AND "source" (the filename key set in chunker.py)
+    # Previously this only filtered by title_number — wiping ALL docs in the case!
     try:
-        all_chunks = case_collection.get(where={"title_number": title_number})
-        if all_chunks["ids"]:
-            case_collection.delete(ids=all_chunks["ids"])
-            print(f"Deleted {len(all_chunks['ids'])} chunks from ChromaDB")
+        doc_chunks = case_collection.get(
+            where={"$and": [
+                {"title_number": title_number},
+                {"source": original_filename}  # "source" is set in chunker.py metadata
+            ]}
+        )
+        if doc_chunks["ids"]:
+            case_collection.delete(ids=doc_chunks["ids"])
+            print(f"Deleted {len(doc_chunks['ids'])} chunks from ChromaDB for: {original_filename}")
+        else:
+            print(f"No ChromaDB chunks found for: {original_filename}")
     except Exception as e:
         print(f"ChromaDB cleanup error: {e}")
 
-    return {"success": True, "message": "Document deleted completely"}
+    return {"success": True, "message": f"Document '{original_filename}' deleted completely"}
+
+@app.get("/debug-chunks/{title_number}")
+async def debug_chunks(title_number: str):
+    """
+    Temporary debug route — shows what metadata keys/values are 
+    stored in ChromaDB for a given case. Delete after debugging.
+    """
+    # Fetch up to 5 chunks for this case to inspect their metadata
+    results = case_collection.get(
+        where={"title_number": title_number},
+        limit=5
+    )
+    return {
+        "ids": results["ids"],
+        "metadatas": results["metadatas"]  # this shows all stored keys + values
+    }
