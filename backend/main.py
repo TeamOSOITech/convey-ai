@@ -80,6 +80,7 @@ def make_clean_filename(filename: str) -> str:
 @app.post("/ingest-formats")
 async def ingest_formats_route():
     """One-time route to populate format library in ChromaDB — delete after use"""
+    title_number = title_number.upper()
     from ingest_formats import ingest_all_enquiries
     ingest_all_enquiries()
     return {"success": True, "message": "Format library ingested"}
@@ -87,6 +88,7 @@ async def ingest_formats_route():
 @app.get("/view-pdf/{filename}")
 async def view_pdf(filename: str):
     # Use DATA_DIR so it works both locally and on Railway volume
+    title_number = title_number.upper()
     file_path = f"{DATA_DIR}/processed_pdfs/{filename}"
     if not os.path.exists(file_path):
         return {"error": "File not found", "looked_for": file_path}
@@ -117,6 +119,7 @@ async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN"
     Receives a contract pack ZIP
     Extracts all PDFs, OCRs each one, stores everything under the title number
     """
+    title_number = title_number.upper()
     # Step 1: Read ZIP bytes
     zip_bytes = await file.read()
 
@@ -195,6 +198,7 @@ async def upload_pdf(file: UploadFile = File(...), title_number: str = "UNKNOWN"
     """
     Full pipeline: PDF → OCR → chunk → embed → store in ChromaDB + Supabase
     """
+    title_number = title_number.upper()
     # Step 1: Read uploaded file bytes
     pdf_bytes = await file.read()
 
@@ -246,6 +250,7 @@ class EnquiryRequest(BaseModel):
 @app.post("/chat")
 async def chat(title_number: str, request: ChatRequest):
     """General Q&A prioritizing the current document"""
+    title_number = title_number.upper()
     result = ask_question(
         request.question, 
         title_number, 
@@ -257,6 +262,7 @@ async def chat(title_number: str, request: ChatRequest):
 @app.get("/search-formats")
 async def search_formats_route(query: str):
     """Test route — searches format library by topic or issue description"""
+    title_number = title_number.upper()
     results = search_formats(query, n_results=3)
     return {
         "query": query,
@@ -273,6 +279,7 @@ async def search_formats_route(query: str):
 @app.post("/raise-enquiry")
 async def raise_enquiry_route(title_number: str, request: EnquiryRequest):
     """Raises enquiry with conversation memory, prioritizing current document"""
+    title_number = title_number.upper()
     result = raise_enquiry(
         request.issue, 
         title_number, 
@@ -284,6 +291,7 @@ async def raise_enquiry_route(title_number: str, request: EnquiryRequest):
 @app.post("/cases")
 async def create_case_route(title_number: str):
     """Creates a new case in Supabase"""
+    title_number = title_number.upper()
     result = create_case(title_number)
     return result
 
@@ -296,6 +304,7 @@ async def get_all_cases_route():
 @app.get("/cases/{title_number}")
 async def get_case_route(title_number: str):
     """Returns a specific case and all its documents"""
+    title_number = title_number.upper()
     result = get_case(title_number)
     return result
 
@@ -339,6 +348,7 @@ async def delete_document_route(title_number: str, document_id: str):
     3. Removes ONLY this document's chunks from ChromaDB (filter by "source" key)
     """
     # Step 1: Delete from Supabase — returns the original filename so we know what to clean up
+    title_number = title_number.upper()
     result = delete_document(document_id, title_number)
     if not result["success"]:
         return result
@@ -382,6 +392,7 @@ async def debug_chunks(title_number: str):
     stored in ChromaDB for a given case. Delete after debugging.
     """
     # Fetch up to 5 chunks for this case to inspect their metadata
+    title_number = title_number.upper()
     results = case_collection.get(
         where={"title_number": title_number},
         limit=5

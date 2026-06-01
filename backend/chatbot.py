@@ -284,6 +284,7 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
     If a document is currently open in the viewer, we prioritise chunks from that doc.
     Falls back to all case docs if no specific doc is open.
     """
+    title_number = title_number.upper()
     current_doc_context = ""
     other_docs_context = ""
 
@@ -383,6 +384,7 @@ def raise_enquiry(issue: str, title_number: str, history: list = [], current_doc
     - The best matching template from the format library (ChromaDB)
     - Case-specific facts, prioritising the currently open document
     """
+    title_number = title_number.upper()
     # Encode the issue description into a vector for similarity search
     query_embedding = model.encode([issue]).tolist()
 
