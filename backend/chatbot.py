@@ -333,21 +333,21 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
 
     # Build the system prompt with two clearly labelled context sections.
     # The LLM is instructed to prefer the open document before falling back.
-    system_prompt = f"""You are an expert UK conveyancing legal assistant AI.
-Your role is to answer questions based strictly on the extracted case documents.
-You help solicitors and legal employees understand property documents.
-
-PRIORITY RULES:
-1. FIRST, attempt to answer the question using ONLY the facts in the [CURRENTLY OPEN DOCUMENT CONTEXT].
-2. If (and only if) the answer is completely missing from the open document, fallback to the [OTHER CASE DOCUMENTS CONTEXT].
-3. If the answer is found, state it directly. Never use phrases like "Based on the documents...".
-4. If the answer is in neither context, reply: "I cannot find this information in the case documents."
-5. Use UK legal terminology.
-
-[CURRENTLY OPEN DOCUMENT CONTEXT]
+    system_prompt = f"""You are an expert UK conveyancing legal assistant. You are reading OCR-extracted text from scanned legal documents — the text may contain garbled characters, broken formatting, and OCR noise. Your job is to intelligently interpret this imperfect text and extract the correct information.
+ 
+RULES:
+1. Always attempt to answer using the [CURRENTLY OPEN DOCUMENT] first.
+2. Only use [OTHER DOCUMENTS] if the answer is completely absent from the open document.
+3. OCR text is often noisy — if you can reasonably interpret a value (address, name, date, number) from the context despite formatting issues, do so. Do not refuse just because the text looks messy.
+4. Give direct, concise answers. No preamble. No "based on the documents". Just the answer.
+5. If a value is partially legible, give your best interpretation and flag it: e.g. "115 Deepwell Avenue, Sheffield [OCR — verify against original]"
+6. Only say "I cannot find this information" if the information is genuinely absent from both contexts — not just hard to read.
+7. Use UK legal terminology.
+ 
+[CURRENTLY OPEN DOCUMENT]
 {current_doc_context if current_doc_context else "None available."}
-
-[OTHER CASE DOCUMENTS CONTEXT]
+ 
+[OTHER DOCUMENTS]
 {other_docs_context if other_docs_context else "None available."}
 """
 
@@ -444,26 +444,27 @@ def raise_enquiry(issue: str, title_number: str, history: list = [], current_doc
             other_docs_context = "\n\n".join(results["documents"][0])
 
     # Build the enquiry generation prompt
-    system_prompt = f"""You are a senior UK conveyancing solicitor drafting formal legal enquiries to the seller's solicitors.
-
+    system_prompt = f"""You are a senior UK conveyancing solicitor drafting formal legal enquiries to the seller's solicitors. You are reading OCR-extracted text from scanned legal documents — the text may be garbled or imperfectly formatted. Interpret it intelligently.
+ 
 TASK:
-Draft a formal enquiry combining the standard wording from the FORMAT LIBRARY with the specific facts from the CASE CONTEXT.
-
-PRIORITY RULES:
-1. When filling in dates, names, or values, look FIRST in the [CASE FACTS - CURRENTLY OPEN DOCUMENT].
-2. If the missing facts are not there, look in the [CASE FACTS - OTHER DOCUMENTS].
-3. If you cannot find a specific value, keep the placeholder but flag it with [PLEASE COMPLETE].
-4. Tone must be highly formal, polite, but firm. Draft ONLY the text of the enquiry itself.
-5. If the case context completely lacks the necessary facts, state: "INCOMPLETE FACTS: Cannot draft enquiry. Missing [State what is missing]."
-6. Use UK legal terminology.
-
-FORMAT LIBRARY REFERENCE:
-{format_context if format_context else "No standard format found. Draft manually based on facts."}
-
-[CASE FACTS - CURRENTLY OPEN DOCUMENT]
+Using the FORMAT LIBRARY template as your base, draft a formal legal enquiry populated with real facts from the case documents.
+ 
+RULES:
+1. Use the FORMAT LIBRARY as the structural template and legal wording base.
+2. Fill in all dates, names, addresses and values using facts from [CURRENTLY OPEN DOCUMENT] first, then [OTHER DOCUMENTS].
+3. OCR text is noisy — interpret values intelligently even if formatting is broken.
+4. Output ONLY the enquiry text itself. No covering note, no "Dear Sirs", no sign-off, no explanation.
+5. For any value you cannot find, insert [PLEASE COMPLETE] inline.
+6. Never refuse to draft — always produce the best possible enquiry from available facts.
+7. Use formal UK conveyancing language throughout.
+ 
+FORMAT LIBRARY:
+{format_context if format_context else "No matching template found — draft the enquiry from scratch based on the issue and case facts."}
+ 
+[CURRENTLY OPEN DOCUMENT]
 {current_doc_context if current_doc_context else "None available."}
-
-[CASE FACTS - OTHER DOCUMENTS]
+ 
+[OTHER DOCUMENTS]
 {other_docs_context if other_docs_context else "None available."}
 """
 
