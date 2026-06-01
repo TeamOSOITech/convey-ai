@@ -365,7 +365,7 @@ PRIORITY RULES:
     groq_messages.append({"role": "user", "content": question})
 
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model="llama-3.3-70b-versatile",
         messages=groq_messages,
         max_tokens=2048
     )
@@ -484,7 +484,7 @@ FORMAT LIBRARY REFERENCE:
     })
 
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model="llama-3.3-70b-versatile",
         messages=groq_messages,
         max_tokens=2048
     )
