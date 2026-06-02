@@ -296,6 +296,7 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
     if current_document:
         # ── STEP 1: Search ONLY the currently open document ──────────────────
         # FIX: metadata key is "source" (set in chunker.py), NOT "filename"
+        current_document = current_document.strip()
         current_results = case_collection.query(
             query_embeddings=query_embedding,
             n_results=8,
@@ -410,6 +411,7 @@ def raise_enquiry(issue: str, title_number: str, history: list = [], current_doc
 
     if current_document:
         # FIX: metadata key is "source" (set in chunker.py), NOT "filename"
+        current_document = current_document.strip()
         current_results = case_collection.query(
             query_embeddings=query_embedding,
             n_results=3,

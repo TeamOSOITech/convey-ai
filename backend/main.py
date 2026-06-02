@@ -456,6 +456,7 @@ async def debug_query(title_number: str, question: str, current_document: str = 
     # What it finds in the current doc
     current_results = {"documents": [[]], "metadatas": [[]]}
     if current_document:
+        current_document = current_document.strip()
         current_results = case_collection.query(
             query_embeddings=query_embedding,
             n_results=3,
