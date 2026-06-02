@@ -406,6 +406,42 @@ async def debug_chunks(title_number: str):
         "metadatas": results["metadatas"]  # this shows all stored keys + values
     }
 
+# @app.get("/debug-query/{title_number}")
+# async def debug_query(title_number: str, question: str, current_document: str = None):
+#     """
+#     Temporary debug — shows exactly what chunks the chatbot would retrieve
+#     for a given question and open document
+#     """
+#     from embeddings import model
+    
+#     query_embedding = model.encode([question]).tolist()
+#     tn = title_number.upper()
+    
+#     # What it finds in the current doc
+#     current_results = {"documents": [[]], "metadatas": [[]]}
+#     if current_document:
+#         current_results = case_collection.query(
+#             query_embeddings=query_embedding,
+#             n_results=3,
+#             where={"$and": [
+#                 {"title_number": tn},
+#                 {"source": current_document}
+#             ]}
+#         )
+    
+#     # What it finds in other docs
+#     other_results = case_collection.query(
+#         query_embeddings=query_embedding,
+#         n_results=3,
+#         where={"title_number": tn}
+#     )
+    
+#     return {
+#         "title_number_queried": tn,
+#         "current_document_filter": current_document,
+#         "current_doc_chunks": current_results["documents"][0],
+#         "other_chunks": other_results["documents"][0]
+#     }
 @app.get("/debug-query/{title_number}")
 async def debug_query(title_number: str, question: str, current_document: str = None):
     """
@@ -423,25 +459,44 @@ async def debug_query(title_number: str, question: str, current_document: str = 
         current_results = case_collection.query(
             query_embeddings=query_embedding,
             n_results=3,
-            where={"$and": [
-                {"title_number": tn},
-                {"source": current_document}
-            ]},
-            include=["documents", "metadatas"]
+            where={
+                "$and": [
+                    {"title_number": {"$eq": tn}},
+                    {"source": {"$eq": current_document}}
+                ]
+            }
         )
     
-    # What it finds in other docs
+    # FIX: Explicitly exclude the current document from the fallback query
+    if current_document:
+        other_where = {
+            "$and": [
+                {"title_number": {"$eq": tn}},
+                {"source": {"$ne": current_document}} # Excludes the active doc
+            ]
+        }
+    else:
+        other_where = {"title_number": tn}
+        
     other_results = case_collection.query(
         query_embeddings=query_embedding,
         n_results=3,
-        where={"title_number": tn}
+        where=other_where
     )
+    
+    # Safely extract documents and metadatas
+    c_docs = current_results["documents"][0] if current_results.get("documents") else []
+    c_meta = current_results["metadatas"][0] if current_results.get("metadatas") else []
+    o_docs = other_results["documents"][0] if other_results.get("documents") else []
+    o_meta = other_results["metadatas"][0] if other_results.get("metadatas") else []
     
     return {
         "title_number_queried": tn,
         "current_document_filter": current_document,
-        "current_doc_chunks": current_results["documents"][0],
-        "other_chunks": other_results["documents"][0]
+        "current_doc_chunks": c_docs,
+        "current_doc_metadatas": c_meta, # Look here to verify your keys!
+        "other_chunks": o_docs,
+        "other_metadatas": o_meta
     }
 @app.get("/debug-sources/{title_number}")
 async def debug_sources(title_number: str):
