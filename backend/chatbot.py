@@ -266,107 +266,295 @@
 # KEY FIX: ChromaDB metadata stores the document name under "source" (set in chunker.py),
 # NOT "filename". All where-filters must use "source" to match correctly.
 
+# import os
+# from groq import Groq
+# from dotenv import load_dotenv
+# # Import the shared embedding model + both ChromaDB collections
+# from embeddings import case_collection, format_collection, model
+
+# load_dotenv()
+
+# # Initialise the Groq LLM client using the API key from environment variables
+# client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+
+# def ask_question(question: str, title_number: str, history: list = [], current_document: str = None) -> dict:
+#     """
+#     General Q&A with conversation memory and Context-Weighted RAG.
+#     If a document is currently open in the viewer, we prioritise chunks from that doc.
+#     Falls back to all case docs if no specific doc is open.
+#     """
+#     title_number = title_number.upper()
+#     current_doc_context = ""
+#     other_docs_context = ""
+
+#     # Encode the question into a vector using our BAAI/bge model.
+#     # We MUST do this manually here — passing query_texts would use ChromaDB's
+#     # default embedding model (384d) which mismatches our stored vectors (768d → crash).
+#     query_embedding = model.encode([question]).tolist()
+
+#     if current_document:
+#         # ── STEP 1: Search ONLY the currently open document ──────────────────
+#         # FIX: metadata key is "source" (set in chunker.py), NOT "filename"
+#         current_document = current_document.strip()
+#         current_results = case_collection.query(
+#             query_embeddings=query_embedding,
+#             n_results=8,
+#             where={"$and": [
+#                 {"title_number": title_number},
+#                 {"source": current_document}   # ← was "filename", now "source"
+#             ]}
+#         )
+#         # Flatten the nested list ChromaDB returns and join into one block of text
+#         if current_results["documents"] and len(current_results["documents"][0]) > 0:
+#             current_doc_context = "\n\n".join(current_results["documents"][0])
+
+#         # ── STEP 2: Search all OTHER documents in the same case ───────────────
+#         # $ne = "not equal" — excludes the currently open doc
+#         other_results = case_collection.query(
+#             query_embeddings=query_embedding,
+#             n_results=12,
+#             where={"$and": [
+#                 {"title_number": title_number},
+#                 {"source": {"$ne": current_document}}  # ← was "filename", now "source"
+#             ]}
+#         )
+#         if other_results["documents"] and len(other_results["documents"][0]) > 0:
+#             other_docs_context = "\n\n".join(other_results["documents"][0])
+
+#     else:
+#         # ── FALLBACK: No document open — search everything in the case ────────
+#         results = case_collection.query(
+#             query_embeddings=query_embedding,
+#             n_results=20,
+#             where={"title_number": title_number}
+#         )
+#         if results["documents"] and len(results["documents"][0]) > 0:
+#             other_docs_context = "\n\n".join(results["documents"][0])
+
+#     # Build the system prompt with two clearly labelled context sections.
+#     # The LLM is instructed to prefer the open document before falling back.
+#     system_prompt = f"""You are an expert UK conveyancing legal assistant. You are reading OCR-extracted text from scanned legal documents — the text may contain garbled characters, broken formatting, and OCR noise. Your job is to intelligently interpret this imperfect text and extract the correct information.
+ 
+# RULES:
+# 1. Always attempt to answer using the [CURRENTLY OPEN DOCUMENT] first.
+# 2. Only use [OTHER DOCUMENTS] if the answer is completely absent from the open document.
+# 3. OCR text is often noisy — if you can reasonably interpret a value (address, name, date, number) from the context despite formatting issues, do so. Do not refuse just because the text looks messy.
+# 4. Give direct, concise answers. No preamble. No "based on the documents". Just the answer.
+# 5. If a value is partially legible, give your best interpretation and flag it: e.g. "115 Deepwell Avenue, Sheffield [OCR — verify against original]"
+# 6. Only say "I cannot find this information" if the information is genuinely absent from both contexts — not just hard to read.
+# 7. Use UK legal terminology.
+ 
+# [CURRENTLY OPEN DOCUMENT]
+# {current_doc_context if current_doc_context else "None available."}
+ 
+# [OTHER DOCUMENTS]
+# {other_docs_context if other_docs_context else "None available."}
+# """
+
+#     # Build the full message list for Groq, including conversation history for memory
+#     groq_messages = [{"role": "system", "content": system_prompt}]
+
+#     # Add all previous turns EXCEPT the last user message (we add that separately below)
+#     for msg in history[:-1]:
+#         groq_messages.append({
+#             "role": msg["role"],
+#             "content": msg["content"]
+#         })
+
+#     # Add the current user question as the final turn
+#     groq_messages.append({"role": "user", "content": question})
+
+#     response = client.chat.completions.create(
+#         model="openai/gpt-oss-120b",
+#         messages=groq_messages,
+#         max_tokens=2048
+#     )
+
+#     return {
+#         "type": "question",
+#         "answer": response.choices[0].message.content,
+#         "title_number": title_number,
+#         "chunks_used": 8
+#     }
+
+
+# def raise_enquiry(issue: str, title_number: str, history: list = [], current_document: str = None) -> dict:
+#     """
+#     Generates a formal UK legal enquiry by combining:
+#     - The best matching template from the format library (ChromaDB)
+#     - Case-specific facts, prioritising the currently open document
+#     """
+#     title_number = title_number.upper()
+#     # Encode the issue description into a vector for similarity search
+#     query_embedding = model.encode([issue]).tolist()
+
+#     # ── STEP 1: Find the best matching enquiry template from the format library ──
+#     format_results = format_collection.query(
+#         query_embeddings=query_embedding,
+#         n_results=1  # Only need the single best match
+#     )
+#     format_context = ""
+#     enquiry_code = "Unknown"
+#     enquiry_topic = "Unknown"
+
+#     if format_results["documents"] and len(format_results["documents"][0]) > 0:
+#         format_context = format_results["documents"][0][0]  # The template text
+#         if format_results["metadatas"] and len(format_results["metadatas"][0]) > 0:
+#             best_match = format_results["metadatas"][0][0]
+#             enquiry_code = best_match.get("code", "Unknown")
+#             enquiry_topic = best_match.get("topic", "Unknown")
+
+#     # ── STEP 2: Gather case facts, prioritising the open document ─────────────
+#     current_doc_context = ""
+#     other_docs_context = ""
+
+#     if current_document:
+#         # FIX: metadata key is "source" (set in chunker.py), NOT "filename"
+#         current_document = current_document.strip()
+#         current_results = case_collection.query(
+#             query_embeddings=query_embedding,
+#             n_results=3,
+#             where={"$and": [
+#                 {"title_number": title_number},
+#                 {"source": current_document}   # ← was "filename", now "source"
+#             ]}
+#         )
+#         if current_results["documents"] and len(current_results["documents"][0]) > 0:
+#             current_doc_context = "\n\n".join(current_results["documents"][0])
+
+#         # Search remaining case documents excluding the open one
+#         other_results = case_collection.query(
+#             query_embeddings=query_embedding,
+#             n_results=5,
+#             where={"$and": [
+#                 {"title_number": title_number},
+#                 {"source": {"$ne": current_document}}  # ← was "filename", now "source"
+#             ]}
+#         )
+#         if other_results["documents"] and len(other_results["documents"][0]) > 0:
+#             other_docs_context = "\n\n".join(other_results["documents"][0])
+
+#     else:
+#         # Fallback: no open document — search the whole case
+#         results = case_collection.query(
+#             query_embeddings=query_embedding,
+#             n_results=8,
+#             where={"title_number": title_number}
+#         )
+#         if results["documents"] and len(results["documents"][0]) > 0:
+#             other_docs_context = "\n\n".join(results["documents"][0])
+
+#     # Build the enquiry generation prompt
+#     system_prompt = f"""You are a senior UK conveyancing solicitor drafting formal legal enquiries to the seller's solicitors. You are reading OCR-extracted text from scanned legal documents — the text may be garbled or imperfectly formatted. Interpret it intelligently.
+ 
+# TASK:
+# Using the FORMAT LIBRARY template as your base, draft a formal legal enquiry populated with real facts from the case documents.
+ 
+# RULES:
+# 1. Use the FORMAT LIBRARY as the structural template and legal wording base.
+# 2. Fill in all dates, names, addresses and values using facts from [CURRENTLY OPEN DOCUMENT] first, then [OTHER DOCUMENTS].
+# 3. OCR text is noisy — interpret values intelligently even if formatting is broken.
+# 4. Output ONLY the enquiry text itself. No covering note, no "Dear Sirs", no sign-off, no explanation.
+# 5. For any value you cannot find, insert [PLEASE COMPLETE] inline.
+# 6. Never refuse to draft — always produce the best possible enquiry from available facts.
+# 7. Use formal UK conveyancing language throughout.
+ 
+# FORMAT LIBRARY:
+# {format_context if format_context else "No matching template found — draft the enquiry from scratch based on the issue and case facts."}
+ 
+# [CURRENTLY OPEN DOCUMENT]
+# {current_doc_context if current_doc_context else "None available."}
+ 
+# [OTHER DOCUMENTS]
+# {other_docs_context if other_docs_context else "None available."}
+# """
+
+#     # Build Groq message list with full conversation history for memory
+#     groq_messages = [{"role": "system", "content": system_prompt}]
+
+#     # Add all previous turns except the last (added separately below)
+#     for msg in history[:-1]:
+#         groq_messages.append({
+#             "role": msg["role"],
+#             "content": msg["content"]
+#         })
+
+#     # The current request, including the matched enquiry code and topic for context
+#     groq_messages.append({
+#         "role": "user",
+#         "content": f"Generate the formal enquiry text for enquiry {enquiry_code} — {enquiry_topic}. Issue: {issue}"
+#     })
+
+#     response = client.chat.completions.create(
+#         model="llama-3.3-70b-versatile",
+#         messages=groq_messages,
+#         max_tokens=2048
+#     )
+
+#     return {
+#         "type": "enquiry",
+#         "enquiry_code": enquiry_code,
+#         "enquiry_topic": enquiry_topic,
+#         "generated_text": response.choices[0].message.content,
+#         "title_number": title_number
+#     }
+
+
+# chatbot.py — handles all AI chat functionality
+
 import os
 from groq import Groq
 from dotenv import load_dotenv
-# Import the shared embedding model + both ChromaDB collections
-from embeddings import case_collection, format_collection, model
+from embeddings import search_case, search_formats
 
 load_dotenv()
 
-# Initialise the Groq LLM client using the API key from environment variables
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
 
 def ask_question(question: str, title_number: str, history: list = [], current_document: str = None) -> dict:
     """
-    General Q&A with conversation memory and Context-Weighted RAG.
-    If a document is currently open in the viewer, we prioritise chunks from that doc.
-    Falls back to all case docs if no specific doc is open.
+    General Q&A with conversation memory
+    history is the full list of previous messages
     """
-    title_number = title_number.upper()
-    current_doc_context = ""
-    other_docs_context = ""
 
-    # Encode the question into a vector using our BAAI/bge model.
-    # We MUST do this manually here — passing query_texts would use ChromaDB's
-    # default embedding model (384d) which mismatches our stored vectors (768d → crash).
-    query_embedding = model.encode([question]).tolist()
+    # Search case documents for relevant chunks
+    search_results = search_case(
+        query=question,
+        title_number=title_number.upper(),
+        n_results=15
+    )
+    
+    relevant_chunks = search_results["documents"][0] if search_results["documents"] else []
+    context = "\n\n".join(relevant_chunks)
 
-    if current_document:
-        # ── STEP 1: Search ONLY the currently open document ──────────────────
-        # FIX: metadata key is "source" (set in chunker.py), NOT "filename"
-        current_document = current_document.strip()
-        current_results = case_collection.query(
-            query_embeddings=query_embedding,
-            n_results=8,
-            where={"$and": [
-                {"title_number": title_number},
-                {"source": current_document}   # ← was "filename", now "source"
-            ]}
-        )
-        # Flatten the nested list ChromaDB returns and join into one block of text
-        if current_results["documents"] and len(current_results["documents"][0]) > 0:
-            current_doc_context = "\n\n".join(current_results["documents"][0])
+    system_prompt = f"""You are a UK conveyancing legal assistant.
+You help solicitors and legal employees understand property documents.
+Answer questions based ONLY on the context provided below.
+If the answer is not in the context, say "I cannot find that information in this document."
+Be precise, professional and detailed in your answers.
+Always provide complete information — do not give short answers.
+Use UK legal terminology.
 
-        # ── STEP 2: Search all OTHER documents in the same case ───────────────
-        # $ne = "not equal" — excludes the currently open doc
-        other_results = case_collection.query(
-            query_embeddings=query_embedding,
-            n_results=12,
-            where={"$and": [
-                {"title_number": title_number},
-                {"source": {"$ne": current_document}}  # ← was "filename", now "source"
-            ]}
-        )
-        if other_results["documents"] and len(other_results["documents"][0]) > 0:
-            other_docs_context = "\n\n".join(other_results["documents"][0])
+DOCUMENT CONTEXT:
+{context}"""
 
-    else:
-        # ── FALLBACK: No document open — search everything in the case ────────
-        results = case_collection.query(
-            query_embeddings=query_embedding,
-            n_results=20,
-            where={"title_number": title_number}
-        )
-        if results["documents"] and len(results["documents"][0]) > 0:
-            other_docs_context = "\n\n".join(results["documents"][0])
-
-    # Build the system prompt with two clearly labelled context sections.
-    # The LLM is instructed to prefer the open document before falling back.
-    system_prompt = f"""You are an expert UK conveyancing legal assistant. You are reading OCR-extracted text from scanned legal documents — the text may contain garbled characters, broken formatting, and OCR noise. Your job is to intelligently interpret this imperfect text and extract the correct information.
- 
-RULES:
-1. Always attempt to answer using the [CURRENTLY OPEN DOCUMENT] first.
-2. Only use [OTHER DOCUMENTS] if the answer is completely absent from the open document.
-3. OCR text is often noisy — if you can reasonably interpret a value (address, name, date, number) from the context despite formatting issues, do so. Do not refuse just because the text looks messy.
-4. Give direct, concise answers. No preamble. No "based on the documents". Just the answer.
-5. If a value is partially legible, give your best interpretation and flag it: e.g. "115 Deepwell Avenue, Sheffield [OCR — verify against original]"
-6. Only say "I cannot find this information" if the information is genuinely absent from both contexts — not just hard to read.
-7. Use UK legal terminology.
- 
-[CURRENTLY OPEN DOCUMENT]
-{current_doc_context if current_doc_context else "None available."}
- 
-[OTHER DOCUMENTS]
-{other_docs_context if other_docs_context else "None available."}
-"""
-
-    # Build the full message list for Groq, including conversation history for memory
+    # Build messages array with full history
+    # This gives Groq memory of the whole conversation
     groq_messages = [{"role": "system", "content": system_prompt}]
 
-    # Add all previous turns EXCEPT the last user message (we add that separately below)
-    for msg in history[:-1]:
+    # Add previous messages from history (excluding the current question)
+    for msg in history[:-1]:  # exclude last message as we add it separately
         groq_messages.append({
             "role": msg["role"],
             "content": msg["content"]
         })
 
-    # Add the current user question as the final turn
+    # Add current question
     groq_messages.append({"role": "user", "content": question})
 
     response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
+        model="llama-3.3-70b-versatile",
         messages=groq_messages,
         max_tokens=2048
     )
@@ -375,112 +563,57 @@ RULES:
         "type": "question",
         "answer": response.choices[0].message.content,
         "title_number": title_number,
-        "chunks_used": 8
+        "chunks_used": len(relevant_chunks)
     }
 
 
 def raise_enquiry(issue: str, title_number: str, history: list = [], current_document: str = None) -> dict:
     """
-    Generates a formal UK legal enquiry by combining:
-    - The best matching template from the format library (ChromaDB)
-    - Case-specific facts, prioritising the currently open document
+    Generates case-specific enquiry text with conversation memory
     """
-    title_number = title_number.upper()
-    # Encode the issue description into a vector for similarity search
-    query_embedding = model.encode([issue]).tolist()
 
-    # ── STEP 1: Find the best matching enquiry template from the format library ──
-    format_results = format_collection.query(
-        query_embeddings=query_embedding,
-        n_results=1  # Only need the single best match
+    # Search format library for matching enquiry template
+    format_results = search_formats(query=issue, n_results=2)
+    format_chunks = format_results["documents"][0] if format_results["documents"] else []
+    format_metadata = format_results["metadatas"][0] if format_results["metadatas"] else []
+
+    # Search case documents for relevant facts
+    case_results = search_case(
+        query=issue,
+        title_number=title_number.upper(),
+        n_results=5
     )
-    format_context = ""
-    enquiry_code = "Unknown"
-    enquiry_topic = "Unknown"
+    case_chunks = case_results["documents"][0] if case_results["documents"] else []
 
-    if format_results["documents"] and len(format_results["documents"][0]) > 0:
-        format_context = format_results["documents"][0][0]  # The template text
-        if format_results["metadatas"] and len(format_results["metadatas"][0]) > 0:
-            best_match = format_results["metadatas"][0][0]
-            enquiry_code = best_match.get("code", "Unknown")
-            enquiry_topic = best_match.get("topic", "Unknown")
+    format_context = "\n\n".join(format_chunks)
+    case_context = "\n\n".join(case_chunks)
 
-    # ── STEP 2: Gather case facts, prioritising the open document ─────────────
-    current_doc_context = ""
-    other_docs_context = ""
+    best_match = format_metadata[0] if format_metadata else {}
+    enquiry_code = best_match.get("code", "Unknown")
+    enquiry_topic = best_match.get("topic", "Unknown")
 
-    if current_document:
-        # FIX: metadata key is "source" (set in chunker.py), NOT "filename"
-        current_document = current_document.strip()
-        current_results = case_collection.query(
-            query_embeddings=query_embedding,
-            n_results=3,
-            where={"$and": [
-                {"title_number": title_number},
-                {"source": current_document}   # ← was "filename", now "source"
-            ]}
-        )
-        if current_results["documents"] and len(current_results["documents"][0]) > 0:
-            current_doc_context = "\n\n".join(current_results["documents"][0])
+    system_prompt = f"""You are a UK conveyancing legal assistant at a solicitors firm.
+Your job is to generate formal legal enquiry text to be sent to the seller's solicitors.
+Use professional UK conveyancing language throughout.
+Generate ONLY the enquiry text — no explanations, no preamble, no sign-off.
+Replace placeholders like (year), (insert date), (insert name) with actual values from the case facts.
+If you cannot find a specific value, keep the placeholder but flag it with [PLEASE COMPLETE].
 
-        # Search remaining case documents excluding the open one
-        other_results = case_collection.query(
-            query_embeddings=query_embedding,
-            n_results=5,
-            where={"$and": [
-                {"title_number": title_number},
-                {"source": {"$ne": current_document}}  # ← was "filename", now "source"
-            ]}
-        )
-        if other_results["documents"] and len(other_results["documents"][0]) > 0:
-            other_docs_context = "\n\n".join(other_results["documents"][0])
+ENQUIRY TEMPLATE:
+{format_context}
 
-    else:
-        # Fallback: no open document — search the whole case
-        results = case_collection.query(
-            query_embeddings=query_embedding,
-            n_results=8,
-            where={"title_number": title_number}
-        )
-        if results["documents"] and len(results["documents"][0]) > 0:
-            other_docs_context = "\n\n".join(results["documents"][0])
+CASE FACTS:
+{case_context}"""
 
-    # Build the enquiry generation prompt
-    system_prompt = f"""You are a senior UK conveyancing solicitor drafting formal legal enquiries to the seller's solicitors. You are reading OCR-extracted text from scanned legal documents — the text may be garbled or imperfectly formatted. Interpret it intelligently.
- 
-TASK:
-Using the FORMAT LIBRARY template as your base, draft a formal legal enquiry populated with real facts from the case documents.
- 
-RULES:
-1. Use the FORMAT LIBRARY as the structural template and legal wording base.
-2. Fill in all dates, names, addresses and values using facts from [CURRENTLY OPEN DOCUMENT] first, then [OTHER DOCUMENTS].
-3. OCR text is noisy — interpret values intelligently even if formatting is broken.
-4. Output ONLY the enquiry text itself. No covering note, no "Dear Sirs", no sign-off, no explanation.
-5. For any value you cannot find, insert [PLEASE COMPLETE] inline.
-6. Never refuse to draft — always produce the best possible enquiry from available facts.
-7. Use formal UK conveyancing language throughout.
- 
-FORMAT LIBRARY:
-{format_context if format_context else "No matching template found — draft the enquiry from scratch based on the issue and case facts."}
- 
-[CURRENTLY OPEN DOCUMENT]
-{current_doc_context if current_doc_context else "None available."}
- 
-[OTHER DOCUMENTS]
-{other_docs_context if other_docs_context else "None available."}
-"""
-
-    # Build Groq message list with full conversation history for memory
+    # Build messages with history for memory
     groq_messages = [{"role": "system", "content": system_prompt}]
 
-    # Add all previous turns except the last (added separately below)
     for msg in history[:-1]:
         groq_messages.append({
             "role": msg["role"],
             "content": msg["content"]
         })
 
-    # The current request, including the matched enquiry code and topic for context
     groq_messages.append({
         "role": "user",
         "content": f"Generate the formal enquiry text for enquiry {enquiry_code} — {enquiry_topic}. Issue: {issue}"
