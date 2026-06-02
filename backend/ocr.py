@@ -56,7 +56,7 @@ def process_pdf(input_pdf_bytes: bytes, filename: str) -> dict:
             force_ocr=True,
             language="eng",
             optimize=0,
-            oversample=150,  # minimal memory usage for free tier
+            oversample=300,  # minimal memory usage for free tier
             jobs=1,         # single threaded to reduce memory
         )
 
