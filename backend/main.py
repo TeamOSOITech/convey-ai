@@ -426,7 +426,8 @@ async def debug_query(title_number: str, question: str, current_document: str = 
             where={"$and": [
                 {"title_number": tn},
                 {"source": current_document}
-            ]}
+            ]},
+            include=["documents", "metadatas"]
         )
     
     # What it finds in other docs

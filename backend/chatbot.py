@@ -325,7 +325,7 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
         # ── FALLBACK: No document open — search everything in the case ────────
         results = case_collection.query(
             query_embeddings=query_embedding,
-            n_results=15,
+            n_results=20,
             where={"title_number": title_number}
         )
         if results["documents"] and len(results["documents"][0]) > 0:
