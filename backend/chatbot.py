@@ -653,7 +653,7 @@ def get_current_document_context(query_embedding: list, title_number: str, curre
         n_results=max_chunks,
         where={
             "$and": [
-                {"title_number": title_number.upper()},
+                {"title_number": {"$eq": title_number.upper()}}, # <-- ADDED $eq HERE
                 {"source": {"$eq": current_document}}
             ]
         },
@@ -661,20 +661,19 @@ def get_current_document_context(query_embedding: list, title_number: str, curre
     )
     
     if results["documents"] and len(results["documents"][0]) > 0:
-        # Tag the chunks so the AI knows they belong to the open document
         return [f"[Source: {current_document}]\n{doc}" for doc in results["documents"][0]]
     return []
 
 
 def get_diverse_context(query_embedding: list, title_number: str, max_per_doc: int = 4, total_max: int = 15, exclude_document: str = None) -> list:
     """Fetches chunks from MULTIPLE documents, optionally excluding the open document."""
-    where_clause = {"title_number": title_number.upper()}
+    where_clause = {"title_number": {"$eq": title_number.upper()}}
     
     # If a document is open, we exclude it from this fallback search
     if exclude_document:
         where_clause = {
             "$and": [
-                {"title_number": title_number.upper()},
+                {"title_number": {"$eq": title_number.upper()}}, # <-- ADDED $eq HERE
                 {"source": {"$ne": exclude_document.strip()}}
             ]
         }

@@ -48,25 +48,26 @@ def store_case_chunks(chunks: list, title_number: str):
     """
     Takes chunks from a case document and stores them in ChromaDB
     title_number is used to identify which case these chunks belong to
-    e.g. "EX332661"
     """
 
     # Step 4: Convert each chunk's text to a vector
-    texts = [chunk["text"] for chunk in chunks]        # extract just the text
-    embeddings = model.encode(texts).tolist()           # convert to vectors
+    texts = [chunk["text"] for chunk in chunks]        
+    embeddings = model.encode(texts).tolist()           
 
     # Step 5: Prepare data for ChromaDB
-    ids = []         # unique ID for each chunk
-    metadatas = []   # metadata for each chunk
+    ids = []         
+    metadatas = []   
 
     for i, chunk in enumerate(chunks):
-        # each chunk needs a unique ID
-        ids.append(f"{title_number}_chunk_{i}")
+        # FIX: Include the source filename in the ID so documents don't overwrite each other!
+        # We replace spaces with underscores just to keep the IDs clean
+        safe_source = chunk["metadata"]["source"].replace(" ", "_")
+        ids.append(f"{title_number}_{safe_source}_chunk_{i}")
 
         # store metadata so we can filter by title number later
         metadatas.append({
-            **chunk["metadata"],          # spread existing metadata (source, chunk_index etc)
-            "title_number": title_number  # add title number so we can filter by case
+            **chunk["metadata"],          
+            "title_number": title_number  
         })
 
     # Step 6: Store everything in ChromaDB
@@ -82,7 +83,6 @@ def store_case_chunks(chunks: list, title_number: str):
         "title_number": title_number,
         "collection": "case_documents"
     }
-
 
 def search_case(query: str, title_number: str, n_results: int = 5):
     """
