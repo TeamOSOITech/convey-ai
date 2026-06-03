@@ -501,60 +501,258 @@
 #     }
 
 
+# # chatbot.py — handles all AI chat functionality
+
+# import os
+# from groq import Groq
+# from dotenv import load_dotenv
+# from embeddings import search_case, search_formats
+
+# load_dotenv()
+
+# client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# def ask_question(question: str, title_number: str, history: list = [], current_document: str = None) -> dict:
+#     """
+#     General Q&A with conversation memory
+#     history is the full list of previous messages
+#     """
+
+#     # Search case documents for relevant chunks
+#     search_results = search_case(
+#         query=question,
+#         title_number=title_number.upper(),
+#         n_results=15
+#     )
+    
+#     relevant_chunks = search_results["documents"][0] if search_results["documents"] else []
+#     context = "\n\n".join(relevant_chunks)
+
+#     system_prompt = f"""You are a UK conveyancing legal assistant.
+# You help solicitors and legal employees understand property documents.
+# Answer questions based ONLY on the context provided below.
+# If the answer is not in the context, say "I cannot find that information in this document."
+# Be precise, professional and detailed in your answers.
+# Always provide complete information — do not give short answers.
+# Use UK legal terminology.
+
+# DOCUMENT CONTEXT:
+# {context}"""
+
+#     # Build messages array with full history
+#     # This gives Groq memory of the whole conversation
+#     groq_messages = [{"role": "system", "content": system_prompt}]
+
+#     # Add previous messages from history (excluding the current question)
+#     for msg in history[:-1]:  # exclude last message as we add it separately
+#         groq_messages.append({
+#             "role": msg["role"],
+#             "content": msg["content"]
+#         })
+
+#     # Add current question
+#     groq_messages.append({"role": "user", "content": question})
+
+#     response = client.chat.completions.create(
+#         model="openai/gpt-oss-120b",
+#         messages=groq_messages,
+#         max_tokens=2048
+#     )
+
+#     return {
+#         "type": "question",
+#         "answer": response.choices[0].message.content,
+#         "title_number": title_number,
+#         "chunks_used": len(relevant_chunks)
+#     }
+
+
+# def raise_enquiry(issue: str, title_number: str, history: list = [], current_document: str = None) -> dict:
+#     """
+#     Generates case-specific enquiry text with conversation memory
+#     """
+
+#     # Search format library for matching enquiry template
+#     format_results = search_formats(query=issue, n_results=2)
+#     format_chunks = format_results["documents"][0] if format_results["documents"] else []
+#     format_metadata = format_results["metadatas"][0] if format_results["metadatas"] else []
+
+#     # Search case documents for relevant facts
+#     case_results = search_case(
+#         query=issue,
+#         title_number=title_number.upper(),
+#         n_results=5
+#     )
+#     case_chunks = case_results["documents"][0] if case_results["documents"] else []
+
+#     format_context = "\n\n".join(format_chunks)
+#     case_context = "\n\n".join(case_chunks)
+
+#     best_match = format_metadata[0] if format_metadata else {}
+#     enquiry_code = best_match.get("code", "Unknown")
+#     enquiry_topic = best_match.get("topic", "Unknown")
+
+#     system_prompt = f"""You are a UK conveyancing legal assistant at a solicitors firm.
+# Your job is to generate formal legal enquiry text to be sent to the seller's solicitors.
+# Use professional UK conveyancing language throughout.
+# Generate ONLY the enquiry text — no explanations, no preamble, no sign-off.
+# Replace placeholders like (year), (insert date), (insert name) with actual values from the case facts.
+# If you cannot find a specific value, keep the placeholder but flag it with [PLEASE COMPLETE].
+
+# ENQUIRY TEMPLATE:
+# {format_context}
+
+# CASE FACTS:
+# {case_context}"""
+
+#     # Build messages with history for memory
+#     groq_messages = [{"role": "system", "content": system_prompt}]
+
+#     for msg in history[:-1]:
+#         groq_messages.append({
+#             "role": msg["role"],
+#             "content": msg["content"]
+#         })
+
+#     groq_messages.append({
+#         "role": "user",
+#         "content": f"Generate the formal enquiry text for enquiry {enquiry_code} — {enquiry_topic}. Issue: {issue}"
+#     })
+
+#     response = client.chat.completions.create(
+#         model="llama-3.3-70b-versatile",
+#         messages=groq_messages,
+#         max_tokens=2048
+#     )
+
+#     return {
+#         "type": "enquiry",
+#         "enquiry_code": enquiry_code,
+#         "enquiry_topic": enquiry_topic,
+#         "generated_text": response.choices[0].message.content,
+#         "title_number": title_number
+#     }
+
 # chatbot.py — handles all AI chat functionality
 
 import os
 from groq import Groq
 from dotenv import load_dotenv
-from embeddings import search_case, search_formats
+from embeddings import case_collection, format_collection, model
 
 load_dotenv()
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-def ask_question(question: str, title_number: str, history: list = [], current_document: str = None) -> dict:
-    """
-    General Q&A with conversation memory
-    history is the full list of previous messages
-    """
-
-    # Search case documents for relevant chunks
-    search_results = search_case(
-        query=question,
-        title_number=title_number.upper(),
-        n_results=15
+def get_current_document_context(query_embedding: list, title_number: str, current_document: str, max_chunks: int = 5) -> list:
+    """Fetches chunks STRICTLY from the currently open document."""
+    current_document = current_document.strip()
+    
+    results = case_collection.query(
+        query_embeddings=query_embedding,
+        n_results=max_chunks,
+        where={
+            "$and": [
+                {"title_number": title_number.upper()},
+                {"source": {"$eq": current_document}}
+            ]
+        },
+        include=["documents"]
     )
     
-    relevant_chunks = search_results["documents"][0] if search_results["documents"] else []
-    context = "\n\n".join(relevant_chunks)
+    if results["documents"] and len(results["documents"][0]) > 0:
+        # Tag the chunks so the AI knows they belong to the open document
+        return [f"[Source: {current_document}]\n{doc}" for doc in results["documents"][0]]
+    return []
 
-    system_prompt = f"""You are a UK conveyancing legal assistant.
-You help solicitors and legal employees understand property documents.
+
+def get_diverse_context(query_embedding: list, title_number: str, max_per_doc: int = 4, total_max: int = 15, exclude_document: str = None) -> list:
+    """Fetches chunks from MULTIPLE documents, optionally excluding the open document."""
+    where_clause = {"title_number": title_number.upper()}
+    
+    # If a document is open, we exclude it from this fallback search
+    if exclude_document:
+        where_clause = {
+            "$and": [
+                {"title_number": title_number.upper()},
+                {"source": {"$ne": exclude_document.strip()}}
+            ]
+        }
+
+    # Cast a wide net (50 chunks)
+    results = case_collection.query(
+        query_embeddings=query_embedding,
+        n_results=50,
+        where=where_clause,
+        include=["documents", "metadatas"]
+    )
+
+    if not results["documents"] or not results["documents"][0]:
+        return []
+
+    docs = results["documents"][0]
+    metas = results["metadatas"][0]
+    diverse_chunks = {}
+
+    # Group by document to prevent starvation
+    for doc, meta in zip(docs, metas):
+        source = meta.get("source", "Unknown_Document")
+        if source not in diverse_chunks:
+            diverse_chunks[source] = []
+            
+        if len(diverse_chunks[source]) < max_per_doc:
+            diverse_chunks[source].append(f"[Source: {source}]\n{doc}")
+
+    final_chunks = []
+    for source_chunks in diverse_chunks.values():
+        final_chunks.extend(source_chunks)
+
+    # Cap to save Groq API tokens
+    return final_chunks[:total_max]
+
+
+def ask_question(question: str, title_number: str, history: list = [], current_document: str = None) -> dict:
+    """General Q&A with Context-Weighted RAG."""
+    query_embedding = model.encode([question]).tolist()
+    
+    current_doc_chunks = []
+    other_doc_chunks = []
+
+    if current_document:
+        # 1. Look in the open document FIRST
+        current_doc_chunks = get_current_document_context(query_embedding, title_number, current_document, max_chunks=5)
+        # 2. Look in diverse OTHER documents
+        other_doc_chunks = get_diverse_context(query_embedding, title_number, max_per_doc=3, total_max=10, exclude_document=current_document)
+    else:
+        # Fallback: Just look everywhere diversely
+        other_doc_chunks = get_diverse_context(query_embedding, title_number, max_per_doc=4, total_max=15)
+
+    current_context = "\n\n".join(current_doc_chunks)
+    other_context = "\n\n".join(other_doc_chunks)
+
+    system_prompt = f"""You are a UK conveyancing legal assistant. You are reviewing OCR-extracted legal property documents.
 Answer questions based ONLY on the context provided below.
-If the answer is not in the context, say "I cannot find that information in this document."
-Be precise, professional and detailed in your answers.
-Always provide complete information — do not give short answers.
-Use UK legal terminology.
 
-DOCUMENT CONTEXT:
-{context}"""
+PRIORITY RULES:
+1. FIRST, attempt to answer the question using ONLY the facts in the [CURRENTLY OPEN DOCUMENT CONTEXT].
+2. If the answer is completely missing from the open document, fallback to the [OTHER CASE DOCUMENTS CONTEXT].
+3. Give direct, precise answers using UK legal terminology. Do not say "Based on the documents...".
+4. ALWAYS cite the [Source: filename] where you found the answer.
+5. If the answer is in neither context, reply: "I cannot find this information in the case documents."
 
-    # Build messages array with full history
-    # This gives Groq memory of the whole conversation
+[CURRENTLY OPEN DOCUMENT CONTEXT]
+{current_context if current_context else "None available."}
+
+[OTHER CASE DOCUMENTS CONTEXT]
+{other_context if other_context else "None available."}"""
+
     groq_messages = [{"role": "system", "content": system_prompt}]
-
-    # Add previous messages from history (excluding the current question)
-    for msg in history[:-1]:  # exclude last message as we add it separately
-        groq_messages.append({
-            "role": msg["role"],
-            "content": msg["content"]
-        })
-
-    # Add current question
+    for msg in history[:-1]:  
+        groq_messages.append({"role": msg["role"], "content": msg["content"]})
     groq_messages.append({"role": "user", "content": question})
 
     response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
+        model="llama-3.1-8b-instant",
         messages=groq_messages,
         max_tokens=2048
     )
@@ -563,64 +761,68 @@ DOCUMENT CONTEXT:
         "type": "question",
         "answer": response.choices[0].message.content,
         "title_number": title_number,
-        "chunks_used": len(relevant_chunks)
+        "chunks_used": len(current_doc_chunks) + len(other_doc_chunks)
     }
 
 
 def raise_enquiry(issue: str, title_number: str, history: list = [], current_document: str = None) -> dict:
-    """
-    Generates case-specific enquiry text with conversation memory
-    """
+    """Generates case-specific enquiry text with Context-Weighted RAG."""
+    query_embedding = model.encode([issue]).tolist()
 
-    # Search format library for matching enquiry template
-    format_results = search_formats(query=issue, n_results=2)
-    format_chunks = format_results["documents"][0] if format_results["documents"] else []
-    format_metadata = format_results["metadatas"][0] if format_results["metadatas"] else []
-
-    # Search case documents for relevant facts
-    case_results = search_case(
-        query=issue,
-        title_number=title_number.upper(),
-        n_results=5
+    # 1. Fetch standard format wording
+    format_results = format_collection.query(
+        query_embeddings=query_embedding,
+        n_results=1
     )
-    case_chunks = case_results["documents"][0] if case_results["documents"] else []
+    format_context = ""
+    enquiry_code, enquiry_topic = "Unknown", "Unknown"
+    
+    if format_results["documents"] and len(format_results["documents"][0]) > 0:
+        format_context = format_results["documents"][0][0]
+        if format_results["metadatas"] and len(format_results["metadatas"][0]) > 0:
+            best_match = format_results["metadatas"][0][0]
+            enquiry_code = best_match.get("code", "Unknown")
+            enquiry_topic = best_match.get("topic", "Unknown")
 
-    format_context = "\n\n".join(format_chunks)
-    case_context = "\n\n".join(case_chunks)
+    # 2. Fetch Facts
+    current_doc_chunks = []
+    other_doc_chunks = []
 
-    best_match = format_metadata[0] if format_metadata else {}
-    enquiry_code = best_match.get("code", "Unknown")
-    enquiry_topic = best_match.get("topic", "Unknown")
+    if current_document:
+        current_doc_chunks = get_current_document_context(query_embedding, title_number, current_document, max_chunks=4)
+        other_doc_chunks = get_diverse_context(query_embedding, title_number, max_per_doc=2, total_max=6, exclude_document=current_document)
+    else:
+        other_doc_chunks = get_diverse_context(query_embedding, title_number, max_per_doc=3, total_max=8)
+
+    current_context = "\n\n".join(current_doc_chunks)
+    other_context = "\n\n".join(other_doc_chunks)
 
     system_prompt = f"""You are a UK conveyancing legal assistant at a solicitors firm.
-Your job is to generate formal legal enquiry text to be sent to the seller's solicitors.
-Use professional UK conveyancing language throughout.
-Generate ONLY the enquiry text — no explanations, no preamble, no sign-off.
-Replace placeholders like (year), (insert date), (insert name) with actual values from the case facts.
-If you cannot find a specific value, keep the placeholder but flag it with [PLEASE COMPLETE].
+# Your job is to generate formal legal enquiry text to be sent to the seller's solicitors.
+# Use professional UK conveyancing language throughout.
+# Generate ONLY the enquiry text — no explanations, no preamble, no sign-off.
+# Replace placeholders like (year), (insert date), (insert name) with actual values from the case facts.
+# If you cannot find a specific value, keep the placeholder but flag it with [PLEASE COMPLETE].
 
-ENQUIRY TEMPLATE:
-{format_context}
+FORMAT LIBRARY TEMPLATE:
+{format_context if format_context else "No template found. Draft manually based on facts."}
 
-CASE FACTS:
-{case_context}"""
+[CASE FACTS - CURRENTLY OPEN DOCUMENT]
+{current_context if current_context else "None available."}
 
-    # Build messages with history for memory
+[CASE FACTS - OTHER DOCUMENTS]
+{other_context if other_context else "None available."}"""
+
     groq_messages = [{"role": "system", "content": system_prompt}]
-
     for msg in history[:-1]:
-        groq_messages.append({
-            "role": msg["role"],
-            "content": msg["content"]
-        })
-
+        groq_messages.append({"role": msg["role"], "content": msg["content"]})
     groq_messages.append({
         "role": "user",
         "content": f"Generate the formal enquiry text for enquiry {enquiry_code} — {enquiry_topic}. Issue: {issue}"
     })
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=groq_messages,
         max_tokens=2048
     )

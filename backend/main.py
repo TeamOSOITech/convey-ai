@@ -258,7 +258,7 @@ async def chat(title_number: str, request: ChatRequest):
         request.question,
         title_number.upper(),  # inline .upper() avoids Python UnboundLocalError
         request.history,
-        #request.current_document
+        request.current_document
     )
     return result
 
@@ -287,7 +287,7 @@ async def raise_enquiry_route(title_number: str, request: EnquiryRequest):
         request.issue,
         title_number.upper(),  # inline .upper() avoids Python UnboundLocalError
         request.history,
-        #request.current_document
+        request.current_document
     )
     return result
 
