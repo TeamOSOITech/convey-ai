@@ -8,8 +8,8 @@ langchain-text-splitters
 chromadb
 sentence-transformers
 groq
-supabase==2.10.0
-websockets==13.0
+supabase
+websockets
 Pillow
 python-dotenv
 aiofiles
