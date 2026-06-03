@@ -30,6 +30,7 @@ case_collection = client.get_or_create_collection(
     metadata={"description": "legal case documents uploaded by employees"}
 )
 
+
 # Collection 2 — format library (enquiry texts, TA6, TR1 language etc)
 format_collection = client.get_or_create_collection(
     name="format_library",
