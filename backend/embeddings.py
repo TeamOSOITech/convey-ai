@@ -44,6 +44,44 @@ checklist_collection = client.get_or_create_collection(
 )
 
 
+# def store_case_chunks(chunks: list, title_number: str):
+#     """
+#     Takes chunks from a case document and stores them in ChromaDB
+#     title_number is used to identify which case these chunks belong to
+#     e.g. "EX332661"
+#     """
+
+#     # Step 4: Convert each chunk's text to a vector
+#     texts = [chunk["text"] for chunk in chunks]        # extract just the text
+#     embeddings = model.encode(texts).tolist()           # convert to vectors
+
+#     # Step 5: Prepare data for ChromaDB
+#     ids = []         # unique ID for each chunk
+#     metadatas = []   # metadata for each chunk
+
+#     for i, chunk in enumerate(chunks):
+#         # each chunk needs a unique ID
+#         ids.append(f"{title_number}_chunk_{i}")
+
+#         # store metadata so we can filter by title number later
+#         metadatas.append({
+#             **chunk["metadata"],          # spread existing metadata (source, chunk_index etc)
+#             "title_number": title_number  # add title number so we can filter by case
+#         })
+
+#     # Step 6: Store everything in ChromaDB
+#     case_collection.add(
+#         ids=ids,
+#         embeddings=embeddings,
+#         documents=texts,
+#         metadatas=metadatas
+#     )
+
+#     return {
+#         "stored": len(chunks),
+#         "title_number": title_number,
+#         "collection": "case_documents"
+#     }
 def store_case_chunks(chunks: list, title_number: str):
     """
     Takes chunks from a case document and stores them in ChromaDB
