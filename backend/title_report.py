@@ -3,10 +3,9 @@
 # How it works:
 #   1. Employee selects documents (OCE, Transfer, Lease etc.) in the UI
 #   2. For each selected document, we fetch ALL its chunks from ChromaDB
-#   3. We send those chunks to the LLM with targeted extraction prompts
-#   4. OCE (Title Register) → date only
-#   5. All other docs → date + Rights Granted, Rights Reserved, Covenants, Provisions
-#   6. Returns a structured dict the frontend renders as the Title Report
+#   3. OCE (Title Register) → specific search date extraction only
+#   4. All other docs → date + Rights Granted, Rights Reserved, Covenants, Provisions
+#   5. LLM returns markdown-formatted text for structured rendering in the frontend
 
 import os
 from groq import Groq
@@ -19,7 +18,6 @@ load_dotenv()
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # Keywords used to identify Title Register (OCE) documents by filename
-# OCE docs only get date extraction — the 4 legal fields don't apply to them
 OCE_KEYWORDS = ["oce", "official copy", "title register", "official copies", "hmlr"]
 
 
@@ -28,32 +26,63 @@ def is_oce_document(filename: str) -> bool:
     Returns True if the filename suggests this is a Title Register (OCE) document.
     Uses keyword matching on the lowercase filename.
     """
-    filename_lower = filename.lower()
-    return any(keyword in filename_lower for keyword in OCE_KEYWORDS)
+    return any(keyword in filename.lower() for keyword in OCE_KEYWORDS)
 
 
-def extract_date(chunks: list, filename: str) -> str:
+def extract_date(chunks: list, filename: str, is_oce: bool = False) -> str:
     """
-    Asks the LLM to find the date of the document from the provided text chunks.
-    Returns a date string like "15 March 2024" or "[NOT FOUND]".
-    
-    We only send the first few chunks since dates appear on the first page.
-    max_tokens is very low — we only need a short date string back.
+    Extracts the date from the document chunks.
+
+    For OCE documents: specifically targets the search date in the format
+    "This official copy shows the entries on the register of title on [DATE] at [TIME]"
+    e.g. "29 Sep 2016 at 10:08:02"
+
+    For all other documents: looks for the main execution/signing date of the deed.
+
+    Returns the date string or [NOT FOUND] if unavailable.
+    max_tokens is low — we only need a short date string back.
     """
-    # Join chunks into a single context block for the LLM
     context = "\n\n".join(chunks)
 
-    prompt = f"""You are a UK conveyancing legal assistant reading OCR-extracted text from a scanned legal document.
-Document: {filename}
+    if is_oce:
+        # OCE-specific prompt — targets the exact search date shown on the official copy
+        # This is the "entries shown as at" date, NOT the edition date
+        prompt = f"""You are reading an Official Copy of Register of Title from HM Land Registry.
 
-TASK: Find and return the date of this document.
-Look for phrases like "dated [date]", "this deed is made on [date]", "made the [date] day of", or a date on the first page.
+TASK: Find and return the search date of this official copy.
+
+Look specifically for text like:
+- "This official copy shows the entries on the register of title on [DATE] at [TIME]"
+- "Issued on [DATE]"
+
+Return the date AND time exactly as shown. Example: "29 Sep 2016 at 10:08:02"
+
+Do NOT return the "Edition date" — that is a different field and not what we want.
 
 RULES:
-- Return ONLY the date string. Example: "15 March 2024" or "25th June 2005"
-- If multiple dates exist, return the main execution date of the document
-- If no date found, return exactly: [NOT FOUND]
-- No explanation, no preamble — just the date
+- Return ONLY the date/time string, nothing else
+- If not found, return exactly: [NOT FOUND]
+
+DOCUMENT TEXT:
+{context}"""
+
+    else:
+        # Standard date extraction for transfer, lease, conveyance, deed etc.
+        # These documents typically have "This deed is made on [date]" or "dated [date]"
+        prompt = f"""You are reading a UK legal conveyancing document: {filename}
+
+TASK: Find and return the date this document was executed (signed/completed).
+
+Look for phrases like:
+- "dated [date]"
+- "this deed is made on [date]"
+- "made the [day] day of [month] [year]"
+- "THIS TRANSFER is made on [date]"
+
+RULES:
+- Return ONLY the date string. Example: "25 March 1999" or "15th June 2005"
+- If multiple dates exist, return the main execution date
+- If not found, return exactly: [NOT FOUND]
 
 DOCUMENT TEXT:
 {context}"""
@@ -61,7 +90,7 @@ DOCUMENT TEXT:
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=50  # A date is never more than a few words
+        max_tokens=50  # Date is never more than a few words
     )
 
     return response.choices[0].message.content.strip()
@@ -69,56 +98,52 @@ DOCUMENT TEXT:
 
 def extract_legal_fields(chunks: list, filename: str) -> dict:
     """
-    Asks the LLM to extract the four standard legal fields from the document:
-      - Rights Granted
-      - Rights Reserved
-      - Covenants
-      - Provisions
+    Extracts the four standard legal fields from a conveyancing document.
+    Requests markdown-formatted output so the frontend can render it with
+    proper structure — headers, bold text, numbered lists etc.
 
-    Returns a dict with these four keys.
-    The LLM is instructed to use exact headings so we can parse the response reliably.
+    Returns a dict with keys: rights_granted, rights_reserved, covenants, provisions
     """
-    # Join all chunks — for legal field extraction we need the full document
     context = "\n\n".join(chunks)
 
-    prompt = f"""You are a UK conveyancing legal assistant reading OCR-extracted text from a scanned legal document.
-Document: {filename}
+    prompt = f"""You are a UK conveyancing legal assistant reading OCR-extracted text from: {filename}
 
-TASK: Extract the following four categories of information from this document.
-OCR text may be noisy — interpret it intelligently even if formatting is broken.
+TASK: Extract the following four categories. Format each section using markdown:
+- Use **bold** for key terms and clause references
+- Use numbered lists (1. 2. 3.) for multiple items
+- Use > blockquote for verbatim legal text
+- Keep headings clean — do not add extra headers beyond what is specified below
 
 For each category:
 - Extract the actual legal wording as accurately as possible
-- Do NOT summarise — use the verbatim text where possible
-- If a category is genuinely not present in this document, write: [NOT PRESENT IN THIS DOCUMENT]
+- If genuinely not present in this document, write: *Not present in this document*
 
-You MUST respond using EXACTLY these four headings in this order:
+Respond using EXACTLY these four headings in this order:
 
 RIGHTS GRANTED:
-[extracted text]
+[markdown formatted extracted text]
 
 RIGHTS RESERVED:
-[extracted text]
+[markdown formatted extracted text]
 
 COVENANTS:
-[extracted text]
+[markdown formatted extracted text]
 
 PROVISIONS:
-[extracted text]
+[markdown formatted extracted text]
 
 DOCUMENT TEXT:
 {context}"""
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="groq/compound",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=2048  # Legal field text can be long
+        max_tokens=2000
     )
 
     raw = response.choices[0].message.content.strip()
 
-    # Parse the LLM response by splitting on the known headings
-    # Default to [NOT FOUND] if a heading is missing from the response
+    # Parse the structured response into individual fields
     fields = {
         "rights_granted": "[NOT FOUND]",
         "rights_reserved": "[NOT FOUND]",
@@ -126,7 +151,7 @@ DOCUMENT TEXT:
         "provisions": "[NOT FOUND]"
     }
 
-    # Map each heading string to its dict key
+    # Map each heading to its dict key for parsing
     heading_map = {
         "RIGHTS GRANTED:": "rights_granted",
         "RIGHTS RESERVED:": "rights_reserved",
@@ -138,12 +163,12 @@ DOCUMENT TEXT:
 
     for i, heading in enumerate(headings):
         if heading not in raw:
-            continue  # Heading missing — keep default [NOT FOUND]
+            continue
 
-        # Content starts after the heading
+        # Content starts right after the heading
         start = raw.index(heading) + len(heading)
 
-        # Content ends at the next heading (or end of string)
+        # Content ends at the next heading or end of string
         end = len(raw)
         for next_heading in headings[i + 1:]:
             if next_heading in raw:
@@ -162,12 +187,12 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
     Main entry point — generates the full Title Report for a set of selected documents.
 
     For each selected filename:
-      - Fetches all ChromaDB chunks for that document (filtered by title_number + source)
-      - Sorts chunks by chunk_index to preserve document reading order
-      - Runs date extraction (all documents)
+      - Fetches all ChromaDB chunks for that document
+      - Sorts chunks by chunk_index to preserve reading order
+      - Runs date extraction (all documents, OCE uses specific prompt)
       - Runs 4-field extraction (all documents EXCEPT OCE/Title Register)
 
-    Returns a dict with per-document results that the frontend renders.
+    Returns a structured dict the frontend renders as the Title Report.
     """
     title_number = title_number.upper()
     report_documents = []
@@ -176,7 +201,7 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
         filename = filename.strip()
 
         # Fetch ALL chunks for this specific document from ChromaDB
-        # We use .get() not .query() because we want every chunk, not top-N similar ones
+        # .get() returns everything — not top-N like .query()
         results = case_collection.get(
             where={
                 "$and": [
@@ -187,7 +212,7 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
             include=["documents", "metadatas"]
         )
 
-        # If no chunks found, this document hasn't been ingested — skip gracefully
+        # If no chunks found, document hasn't been ingested — skip gracefully
         if not results["ids"]:
             report_documents.append({
                 "filename": filename,
@@ -197,37 +222,35 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
                 "rights_reserved": None,
                 "covenants": None,
                 "provisions": None,
-                "error": "No chunks found — document may not have been uploaded or processed"
+                "error": "No chunks found — document may not have been uploaded"
             })
             continue
 
-        # Sort chunks by chunk_index so we read the document in order
-        # chunk_index is set in chunker.py when the document is first processed
+        # Sort chunks by chunk_index to read the document in correct order
         chunks_with_meta = list(zip(results["documents"], results["metadatas"]))
         chunks_with_meta.sort(key=lambda x: x[1].get("chunk_index", 0))
         all_chunks = [chunk for chunk, _ in chunks_with_meta]
 
-        # Determine if this is a Title Register (OCE) document
         is_oce = is_oce_document(filename)
 
-        # For date extraction: OCE → first 3 chunks (date is on page 1)
-        # Other docs → first 5 chunks (date usually near the top)
+        # For date extraction:
+        # OCE → first 3 chunks only (search date is always on page 1)
+        # Other docs → first 5 chunks (execution date usually near the top)
         date_chunks = all_chunks[:3] if is_oce else all_chunks[:5]
-        date = extract_date(date_chunks, filename)
+        date = extract_date(date_chunks, filename, is_oce=is_oce)
 
         # Build the result entry for this document
         doc_result = {
             "filename": filename,
             "is_oce": is_oce,
             "date": date,
-            "rights_granted": None,  # None = not applicable (OCE)
+            "rights_granted": None,  # None = not applicable for OCE
             "rights_reserved": None,
             "covenants": None,
             "provisions": None
         }
 
         # Extract the four legal fields for non-OCE documents only
-        # OCE (Title Register) does not contain these sections
         if not is_oce:
             fields = extract_legal_fields(all_chunks, filename)
             doc_result["rights_granted"] = fields["rights_granted"]
