@@ -88,7 +88,7 @@ DOCUMENT TEXT:
 {context}"""
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="groq/compound",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=50  # Date is never more than a few words
     )
@@ -138,7 +138,7 @@ DOCUMENT TEXT:
     response = client.chat.completions.create(
         model="groq/compound",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=2000
+        max_tokens=2048
     )
 
     raw = response.choices[0].message.content.strip()
