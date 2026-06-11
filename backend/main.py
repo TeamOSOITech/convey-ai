@@ -13,6 +13,11 @@ import os
 from pydantic import BaseModel
 from typing import List, Optional
 from zip_processor import extract_zip
+# Find this line near the top of main.py:
+from chatbot import ask_question, raise_enquiry
+
+# Add this right below it:
+from title_report import generate_title_report
 
 
 # Create required folders if they don't exist
@@ -249,6 +254,9 @@ class EnquiryRequest(BaseModel):
     issue: str
     history: Optional[List[dict]] = []  # conversation history
     current_document: Optional[str] = None  # Add this new field!
+
+class TitleReportRequest(BaseModel):
+    selected_filenames: List[str]
 
 @app.post("/chat")
 async def chat(title_number: str, request: ChatRequest):
@@ -545,3 +553,21 @@ async def debug_sources(title_number: str):
     # Extract unique source values from all metadata
     sources = list(set(m["source"] for m in results["metadatas"]))
     return {"title_number": title_number.upper(), "sources": sources}
+
+
+@app.post("/generate-title-report")
+async def generate_title_report_route(title_number: str, request: TitleReportRequest):
+    """Generates structured Title Report for selected documents"""
+    result = generate_title_report(
+        title_number.upper(),
+        request.selected_filenames
+    )
+    return result
+
+
+@app.post("/ingest-letters")
+async def ingest_letters_route():
+    """One-time route to ingest letter templates into ChromaDB"""
+    from ingest_letters import ingest_all_letters
+    ingest_all_letters()
+    return {"success": True, "message": "Letter templates ingested"}
