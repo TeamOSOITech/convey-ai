@@ -1,15 +1,16 @@
 'use client'
 // app/case/[titleNumber]/title-report/page.js
 // Title Report Tool — employee selects documents, system extracts:
-//   - Date from ALL selected documents
-//   - Rights Granted, Rights Reserved, Covenants, Provisions from non-OCE docs
+//   - OCE: the exact search date ("29 Sep 2016 at 10:08:02" format)
+//   - All other docs: date + Rights Granted, Rights Reserved, Covenants, Provisions
+//   - All legal field content is rendered as markdown for proper structure
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
+import ReactMarkdown from 'react-markdown'
 
-// Document type labels shown in the UI selection panel
-// These help employees identify what kind of document they're selecting
+// Human-readable labels for document types shown in the selection panel
 const DOC_TYPE_LABELS = {
   OCE: 'Title Register',
   LEASE: 'Lease',
@@ -25,11 +26,10 @@ export default function TitleReportPage() {
   const { titleNumber } = useParams()
   const { user, loading: authLoading } = useAuth()
 
-  // All documents available in this case
   const [caseData, setCaseData] = useState(null)
   const [pageLoading, setPageLoading] = useState(true)
 
-  // Which documents the employee has ticked for the report
+  // Filenames the employee has ticked for inclusion in the report
   const [selectedFilenames, setSelectedFilenames] = useState([])
 
   // Report generation state
@@ -37,7 +37,7 @@ export default function TitleReportPage() {
   const [report, setReport] = useState(null)
   const [error, setError] = useState(null)
 
-  // Track which sections the employee has copied (for visual feedback)
+  // Tracks which field was just copied for visual "Copied!" feedback
   const [copiedField, setCopiedField] = useState(null)
 
   useEffect(() => { fetchCase() }, [titleNumber])
@@ -57,25 +57,22 @@ export default function TitleReportPage() {
     }
   }
 
-  // Toggle a document in/out of the selection list
+  // Toggle a document in/out of the selected list
   const toggleDocument = (filename) => {
     setSelectedFilenames(prev =>
       prev.includes(filename)
-        ? prev.filter(f => f !== filename)  // Remove if already selected
-        : [...prev, filename]               // Add if not yet selected
+        ? prev.filter(f => f !== filename)
+        : [...prev, filename]
     )
   }
 
-  // Select all documents at once
   const selectAll = () => {
-    const allFilenames = caseData?.documents?.map(d => d.filename) || []
-    setSelectedFilenames(allFilenames)
+    setSelectedFilenames(caseData?.documents?.map(d => d.filename) || [])
   }
 
-  // Clear all selections
   const clearAll = () => setSelectedFilenames([])
 
-  // Send selected filenames to the backend and get the structured report back
+  // Send selected filenames to backend and retrieve the structured report
   const generateReport = async () => {
     if (selectedFilenames.length === 0) return
 
@@ -97,7 +94,6 @@ export default function TitleReportPage() {
       )
 
       const data = await res.json()
-
       if (!res.ok) {
         setError(data.detail || 'Failed to generate report')
       } else {
@@ -110,22 +106,21 @@ export default function TitleReportPage() {
     }
   }
 
-  // Copy a specific text value to clipboard with visual feedback
+  // Copy text to clipboard with 2s visual feedback
   const copyToClipboard = (text, fieldId) => {
     navigator.clipboard.writeText(text)
     setCopiedField(fieldId)
-    // Reset the "Copied!" indicator after 2 seconds
     setTimeout(() => setCopiedField(null), 2000)
   }
 
-  // Copy the entire report as formatted plain text
+  // Build and copy the entire report as plain text
   const copyFullReport = () => {
     if (!report) return
 
     const lines = [`TITLE REPORT — ${report.title_number}`, '']
 
     report.documents.forEach(doc => {
-      lines.push(`${'─'.repeat(60)}`)
+      lines.push('─'.repeat(60))
       lines.push(`Document: ${doc.filename}`)
       lines.push(`Date: ${doc.date}`)
 
@@ -159,7 +154,7 @@ export default function TitleReportPage() {
   return (
     <div className="min-h-screen bg-gray-50">
 
-      {/* ── Top navigation bar ──────────────────────────────────────── */}
+      {/* ── Breadcrumb navigation ───────────────────────────────────── */}
       <div className="bg-white border-b border-gray-200 px-6 py-4">
         <div className="max-w-6xl mx-auto flex items-center gap-3">
           <a href="/" className="text-sm text-gray-400 hover:text-gray-600">← All Cases</a>
@@ -172,14 +167,13 @@ export default function TitleReportPage() {
         </div>
       </div>
 
-      {/* ── Main two-column layout ───────────────────────────────────── */}
+      {/* ── Two-column layout ───────────────────────────────────────── */}
       <div className="max-w-6xl mx-auto px-6 py-8 flex gap-6 items-start">
 
-        {/* ── LEFT: Document selection panel ──────────────────────── */}
+        {/* ── LEFT: Document selection ─────────────────────────────── */}
         <div className="w-72 flex-shrink-0">
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
 
-            {/* Panel header */}
             <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-gray-800">Select Documents</h2>
               <span className="text-xs text-gray-400">
@@ -187,19 +181,13 @@ export default function TitleReportPage() {
               </span>
             </div>
 
-            {/* Select all / clear all */}
+            {/* Select all / clear buttons */}
             <div className="px-4 py-2 border-b border-gray-100 flex gap-3">
-              <button
-                onClick={selectAll}
-                className="text-xs text-blue-600 hover:underline"
-              >
+              <button onClick={selectAll} className="text-xs text-blue-600 hover:underline">
                 Select all
               </button>
               <span className="text-gray-200">|</span>
-              <button
-                onClick={clearAll}
-                className="text-xs text-gray-400 hover:underline"
-              >
+              <button onClick={clearAll} className="text-xs text-gray-400 hover:underline">
                 Clear
               </button>
             </div>
@@ -207,9 +195,7 @@ export default function TitleReportPage() {
             {/* Document checkboxes */}
             <div className="divide-y divide-gray-50 max-h-96 overflow-y-auto">
               {documents.length === 0 ? (
-                <p className="p-4 text-xs text-gray-400">
-                  No documents in this case yet.
-                </p>
+                <p className="p-4 text-xs text-gray-400">No documents in this case yet.</p>
               ) : (
                 documents.map((doc) => {
                   const isSelected = selectedFilenames.includes(doc.filename)
@@ -220,7 +206,6 @@ export default function TitleReportPage() {
                         isSelected ? 'bg-indigo-50' : 'hover:bg-gray-50'
                       }`}
                     >
-                      {/* Checkbox */}
                       <input
                         type="checkbox"
                         checked={isSelected}
@@ -228,14 +213,10 @@ export default function TitleReportPage() {
                         className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                       />
                       <div className="min-w-0">
-                        {/* Doc type label */}
                         <p className="text-xs font-medium text-gray-500 mb-0.5">
                           {DOC_TYPE_LABELS[doc.doc_type] || doc.doc_type}
                         </p>
-                        {/* Filename truncated */}
-                        <p className="text-xs text-gray-700 truncate">
-                          {doc.filename}
-                        </p>
+                        <p className="text-xs text-gray-700 truncate">{doc.filename}</p>
                       </div>
                     </label>
                   )
@@ -264,17 +245,15 @@ export default function TitleReportPage() {
           </div>
         </div>
 
-        {/* ── RIGHT: Report output panel ───────────────────────────── */}
+        {/* ── RIGHT: Report output ─────────────────────────────────── */}
         <div className="flex-1 min-w-0">
 
-          {/* Empty state — nothing generated yet */}
+          {/* Empty state */}
           {!report && !generating && !error && (
             <div className="bg-white rounded-xl border border-dashed border-gray-300 py-20 flex flex-col items-center justify-center">
               <div className="text-4xl mb-4">📋</div>
               <p className="text-gray-500 font-medium mb-1">No report generated yet</p>
-              <p className="text-sm text-gray-400">
-                Select documents on the left and click Generate Report
-              </p>
+              <p className="text-sm text-gray-400">Select documents and click Generate Report</p>
             </div>
           )}
 
@@ -283,9 +262,7 @@ export default function TitleReportPage() {
             <div className="bg-white rounded-xl border border-gray-200 py-20 flex flex-col items-center justify-center">
               <div className="animate-pulse text-4xl mb-4">⚙️</div>
               <p className="text-gray-600 font-medium mb-1">Extracting information...</p>
-              <p className="text-sm text-gray-400">
-                This may take a moment for multiple documents
-              </p>
+              <p className="text-sm text-gray-400">This may take a moment for multiple documents</p>
             </div>
           )}
 
@@ -300,7 +277,7 @@ export default function TitleReportPage() {
           {report && (
             <div className="space-y-4">
 
-              {/* Report header with copy all button */}
+              {/* Report header */}
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-bold text-gray-900">
@@ -320,45 +297,44 @@ export default function TitleReportPage() {
 
               {/* Per-document sections */}
               {report.documents.map((doc, index) => (
-                <div
-                  key={index}
-                  className="bg-white rounded-xl border border-gray-200 overflow-hidden"
-                >
-                  {/* Document header row */}
+                <div key={index} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+
+                  {/* Document header */}
                   <div className="px-5 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
                     <div>
-                      {/* Doc type badge + filename */}
-                      <div className="flex items-center gap-2 mb-0.5">
+                      <div className="flex items-center gap-2 mb-1">
                         <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                           doc.is_oce
                             ? 'bg-blue-100 text-blue-700'
                             : 'bg-indigo-100 text-indigo-700'
                         }`}>
-                          {doc.is_oce ? 'Title Register' : 'Title Document'}
+                          {doc.is_oce ? 'Title Register (OCE)' : 'Title Document'}
                         </span>
+                        {/* Show error badge if document wasn't found in ChromaDB */}
                         {doc.error && (
                           <span className="text-xs text-red-500">⚠ {doc.error}</span>
                         )}
                       </div>
                       <p className="text-sm font-medium text-gray-800">{doc.filename}</p>
                     </div>
-                    {/* Date badge */}
+
+                    {/* Date extracted from document — prominently displayed */}
                     <div className="text-right">
                       <p className="text-xs text-gray-400 mb-0.5">Date</p>
                       <p className="text-sm font-semibold text-gray-800">{doc.date}</p>
                     </div>
                   </div>
 
-                  {/* OCE documents only show date — no legal fields section */}
+                  {/* OCE note — date only, no legal fields */}
                   {doc.is_oce && (
                     <div className="px-5 py-3">
                       <p className="text-xs text-gray-400 italic">
-                        Title Register — date extracted only. Rights and covenants are contained in the title deeds below.
+                        Title Register — search date extracted. Rights and covenants are contained in the title deeds listed below.
                       </p>
                     </div>
                   )}
 
-                  {/* Legal fields — shown for all non-OCE documents */}
+                  {/* Legal fields with markdown rendering — non-OCE documents only */}
                   {!doc.is_oce && (
                     <div className="divide-y divide-gray-100">
                       {[
@@ -370,11 +346,13 @@ export default function TitleReportPage() {
                         const fieldId = `${index}-${key}`
                         const value = doc[key] || '[NOT FOUND]'
                         const isCopied = copiedField === fieldId
+                        const isPlaceholder = value.startsWith('[') || value.startsWith('*Not present')
 
                         return (
                           <div key={key} className="px-5 py-4">
-                            {/* Field header with copy button */}
-                            <div className="flex items-center justify-between mb-2">
+
+                            {/* Field label + copy button */}
+                            <div className="flex items-center justify-between mb-3">
                               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
                                 {label}
                               </h4>
@@ -385,14 +363,25 @@ export default function TitleReportPage() {
                                 {isCopied ? '✓ Copied' : 'Copy'}
                               </button>
                             </div>
-                            {/* Extracted content */}
-                            <p className={`text-sm leading-relaxed whitespace-pre-wrap ${
-                              value.startsWith('[')
-                                ? 'text-gray-400 italic'  // Placeholder values shown dimmed
-                                : 'text-gray-800'         // Real extracted content shown normally
-                            }`}>
-                              {value}
-                            </p>
+
+                            {/* Markdown rendered content */}
+                            {isPlaceholder ? (
+                              // Show placeholder values dimmed and italic — no markdown needed
+                              <p className="text-sm text-gray-400 italic">{value}</p>
+                            ) : (
+                              // Render LLM markdown output with proper formatting
+                              // prose class from Tailwind Typography gives clean text styling
+                              <div className="text-sm text-gray-800 leading-relaxed
+                                [&_strong]:font-semibold [&_strong]:text-gray-900
+                                [&_ol]:list-decimal [&_ol]:ml-5 [&_ol]:space-y-1
+                                [&_ul]:list-disc [&_ul]:ml-5 [&_ul]:space-y-1
+                                [&_blockquote]:border-l-4 [&_blockquote]:border-indigo-200
+                                [&_blockquote]:pl-3 [&_blockquote]:text-gray-600
+                                [&_blockquote]:italic [&_blockquote]:my-2
+                                [&_p]:mb-2 [&_p:last-child]:mb-0">
+                                <ReactMarkdown>{value}</ReactMarkdown>
+                              </div>
+                            )}
                           </div>
                         )
                       })}
