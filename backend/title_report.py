@@ -268,6 +268,7 @@
 # title_report.py — generates structured Title Reports from selected case documents
 
 import os
+import time
 from groq import Groq
 from dotenv import load_dotenv
 from embeddings import case_collection, model
@@ -288,7 +289,7 @@ def is_oce_document(filename: str) -> bool:
 
 def extract_date(chunks: list, filename: str, is_oce: bool = False) -> str:
     """
-    High-speed Sequential Scan to read 100% of the document without hitting the 413 Error.
+    Sequential Scan with strict Rate-Limit (429) Auto-Retries.
     """
     if is_oce:
         prompt_instruction = """TASK: Find and return the search date of this official copy.
@@ -299,9 +300,8 @@ Return ONLY the date/time string, nothing else. If not found, return exactly: [N
 Look for phrases like "dated [date]" or "this deed is made on [date]".
 Return ONLY the date string. If not found, return exactly: [NOT FOUND]"""
 
-    # We send the document 15 chunks at a time. This keeps each request safely under 
-    # the 413 size limit, while utilizing your 70k TPM limit to scan instantly.
-    batch_size = 15 
+    # 10 chunks per batch keeps us safely under the 413 (Too Large) limit
+    batch_size = 10 
 
     for i in range(0, len(chunks), batch_size):
         batch = chunks[i:i + batch_size]
@@ -313,22 +313,38 @@ Return ONLY the date string. If not found, return exactly: [NOT FOUND]"""
 DOCUMENT TEXT:
 {context}"""
 
-        try:
-            response = client.chat.completions.create(
-                model="groq/compound", # Using your preferred 70k TPM model
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=50
-            )
-            
-            result = response.choices[0].message.content.strip()
-            
-            # If it finds the date, it immediately returns it and stops scanning
-            if result != "[NOT FOUND]" and len(result) >= 4:
-                return result
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model="groq/compound", 
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=50,
+                    temperature=0.1
+                )
                 
-        except Exception as e:
-            print(f"Batch date extraction error: {e}")
-            continue
+                result = response.choices[0].message.content.strip()
+                
+                # If it finds the date, return immediately
+                if result != "[NOT FOUND]" and len(result) >= 4:
+                    return result
+                
+                # Success, but date not found in this batch. 
+                # Sleep 2.1s to guarantee we stay under the 30 Requests Per Minute limit.
+                time.sleep(2.1)
+                break  # Break out of the retry loop, move to the next batch
+
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str:
+                    print(f"Rate limited by Groq. Sleeping 4 seconds... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(4)  # Wait for the RPM bucket to cool down before retrying
+                elif "413" in error_str:
+                    print("Batch too large (413). Skipping this specific batch.")
+                    break  # Unfixable size error, skip batch
+                else:
+                    print(f"Batch date extraction error: {e}")
+                    break  # Unknown error, skip batch
 
     return "Unknown Date"
 
@@ -337,8 +353,7 @@ def extract_legal_fields(chunks: list, filename: str) -> dict:
     """
     Extracts the four standard legal fields from a conveyancing document.
     """
-    # To prevent 413 errors here, we safely cap the context to the first ~30 chunks 
-    # (which covers about 45 pages of text—more than enough for the main clauses)
+    # Cap context to ~30 chunks (~45 pages) to prevent 413 Request Entity Too Large errors
     safe_chunks = chunks[:30]
     context = "\n\n".join(safe_chunks)
 
@@ -370,56 +385,68 @@ PROVISIONS:
 DOCUMENT TEXT:
 {context}"""
 
-    try:
-        response = client.chat.completions.create(
-            model="groq/compound", # Using your preferred model
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2048
-        )
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="groq/compound", 
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2048,
+                temperature=0.1
+            )
 
-        raw = response.choices[0].message.content.strip()
+            raw = response.choices[0].message.content.strip()
 
-        fields = {
-            "rights_granted": "[NOT FOUND]",
-            "rights_reserved": "[NOT FOUND]",
-            "covenants": "[NOT FOUND]",
-            "provisions": "[NOT FOUND]"
-        }
+            fields = {
+                "rights_granted": "[NOT FOUND]",
+                "rights_reserved": "[NOT FOUND]",
+                "covenants": "[NOT FOUND]",
+                "provisions": "[NOT FOUND]"
+            }
 
-        heading_map = {
-            "RIGHTS GRANTED:": "rights_granted",
-            "RIGHTS RESERVED:": "rights_reserved",
-            "COVENANTS:": "covenants",
-            "PROVISIONS:": "provisions"
-        }
+            heading_map = {
+                "RIGHTS GRANTED:": "rights_granted",
+                "RIGHTS RESERVED:": "rights_reserved",
+                "COVENANTS:": "covenants",
+                "PROVISIONS:": "provisions"
+            }
 
-        headings = list(heading_map.keys())
+            headings = list(heading_map.keys())
 
-        for i, heading in enumerate(headings):
-            if heading not in raw:
-                continue
+            for i, heading in enumerate(headings):
+                if heading not in raw:
+                    continue
 
-            start = raw.index(heading) + len(heading)
-            end = len(raw)
-            for next_heading in headings[i + 1:]:
-                if next_heading in raw:
-                    candidate = raw.index(next_heading)
-                    if candidate > start:
-                        end = candidate
-                        break
+                start = raw.index(heading) + len(heading)
+                end = len(raw)
+                for next_heading in headings[i + 1:]:
+                    if next_heading in raw:
+                        candidate = raw.index(next_heading)
+                        if candidate > start:
+                            end = candidate
+                            break
 
-            fields[heading_map[heading]] = raw[start:end].strip()
+                fields[heading_map[heading]] = raw[start:end].strip()
 
-        return fields
-        
-    except Exception as e:
-        print(f"Legal fields extraction error: {e}")
-        return {
-            "rights_granted": "Error processing document limit.",
-            "rights_reserved": "Error processing document limit.",
-            "covenants": "Error processing document limit.",
-            "provisions": "Error processing document limit."
-        }
+            # Sleep 2.1s after a successful extraction to protect the RPM limit for the next document
+            time.sleep(2.1)
+            return fields
+            
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str:
+                print(f"Legal fields rate limited by Groq. Sleeping 5 seconds... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(5)
+            else:
+                print(f"Legal fields extraction error: {e}")
+                break
+
+    return {
+        "rights_granted": "Extraction failed due to API limits.",
+        "rights_reserved": "Extraction failed due to API limits.",
+        "covenants": "Extraction failed due to API limits.",
+        "provisions": "Extraction failed due to API limits."
+    }
 
 
 def generate_title_report(title_number: str, selected_filenames: list) -> dict:
@@ -463,8 +490,7 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
 
         is_oce = is_oce_document(filename)
 
-        # FIXED: We now pass ALL chunks to the extraction function. 
-        # No more cutting the document off after 5 chunks!
+        # Process Date Extraction (Reads entire document safely)
         date = extract_date(all_chunks, filename, is_oce=is_oce)
 
         doc_result = {
@@ -477,6 +503,7 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
             "provisions": None
         }
 
+        # Process the 4 Legal Fields
         if not is_oce:
             fields = extract_legal_fields(all_chunks, filename)
             doc_result["rights_granted"] = fields["rights_granted"]
