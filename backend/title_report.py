@@ -381,7 +381,7 @@ DOCUMENT TEXT:
 {context}"""
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="groq/compound",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=50  # Date is never more than a few words
     )
@@ -420,7 +420,7 @@ SECTION TEXT:
 {batch_text}"""
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="groq/compound",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=800  # Enough for partial findings from one batch
     )
@@ -496,7 +496,7 @@ EXTRACTIONS FROM ALL SECTIONS:
 {combined}"""
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="groq/compound",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2500
     )
