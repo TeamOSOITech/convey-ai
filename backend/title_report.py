@@ -265,8 +265,8 @@
 #         "total_documents": len(report_documents),
 #         "documents": report_documents
 #     }
-# title_report.py — generates structured Title Reports from selected case documents
 
+#
 # title_report.py — generates structured Title Reports from selected case documents
 #
 # Uses a MAP-REDUCE approach for legal field extraction:
@@ -381,7 +381,7 @@ DOCUMENT TEXT:
 {context}"""
 
     response = client.chat.completions.create(
-        model="groq/compound",
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=50  # Date is never more than a few words
     )
@@ -420,7 +420,7 @@ SECTION TEXT:
 {batch_text}"""
 
     response = client.chat.completions.create(
-        model="groq/compound",
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=800  # Enough for partial findings from one batch
     )
@@ -496,7 +496,7 @@ EXTRACTIONS FROM ALL SECTIONS:
 {combined}"""
 
     response = client.chat.completions.create(
-        model="groq/compound",
+        model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2500
     )
