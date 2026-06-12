@@ -676,7 +676,7 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 OCE_KEYWORDS = ["oce", "official copy", "title register", "official copies", "hmlr"]
 
-BATCH_SIZE = 8000
+BATCH_SIZE = 6000
 BATCH_OVERLAP = 300
 MAX_CHARS_DATE = 3000
 
@@ -698,9 +698,7 @@ def split_into_batches(text: str) -> list:
 # -----------------------------------------------------------------------------
 def safe_groq_call(prompt: str, max_tokens: int) -> str:
     """
-    Makes a Groq API call. If a 429 Rate Limit error occurs, it dynamically
-    reads the required wait time (e.g. '7.56s' or '459ms') from the error message,
-    sleeps for that exact duration, and retries gracefully without crashing.
+    Makes a Groq API call with strict speed limits to cruise under the 30k TPM cap.
     """
     max_retries = 5
     for attempt in range(max_retries):
@@ -710,24 +708,23 @@ def safe_groq_call(prompt: str, max_tokens: int) -> str:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens
             )
-            # Sleep 1.5s after every successful call to prevent bursting the RPM limit
-            time.sleep(1.5)
+            # PROACTIVE SPEED LIMIT: Sleep 4 full seconds to prevent draining the 30k TPM bucket
+            time.sleep(4.0)
             return response.choices[0].message.content.strip()
             
         except Exception as e:
             error_str = str(e)
             if "429" in error_str:
-                # Default fallback wait time
                 wait_time = 5.0 
                 
-                # Use Regex to extract exact requested wait time from Groq's error message
+                # Extract wait time and add a generous 3-second safety buffer
                 match_s = re.search(r"try again in ([0-9.]+)s", error_str)
                 match_ms = re.search(r"try again in ([0-9.]+)ms", error_str)
                 
                 if match_s:
-                    wait_time = float(match_s.group(1)) + 0.5 # Add half second buffer
+                    wait_time = float(match_s.group(1)) + 3.0 
                 elif match_ms:
-                    wait_time = (float(match_ms.group(1)) / 1000.0) + 0.5
+                    wait_time = (float(match_ms.group(1)) / 1000.0) + 3.0
                     
                 print(f"[Rate Limit] Groq requested wait. Pausing for {wait_time:.2f}s... (Attempt {attempt + 1}/{max_retries})")
                 time.sleep(wait_time)
@@ -739,8 +736,7 @@ def safe_groq_call(prompt: str, max_tokens: int) -> str:
                 print(f"[Groq Error] Unhandled exception: {error_str}")
                 time.sleep(2)
                 
-    return "" # Return empty if all retries fail so the app doesn't crash
-
+    return ""
 
 # -----------------------------------------------------------------------------
 # EXTRACTION FUNCTIONS
@@ -787,7 +783,7 @@ Rules: Write NONE if a category is not present. Do not summarise.
 SECTION TEXT:
 {batch_text}"""
 
-    return safe_groq_call(prompt, max_tokens=800)
+    return safe_groq_call(prompt, max_tokens=300)
 
 
 def has_content(batch_result: str) -> bool:
