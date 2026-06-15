@@ -661,7 +661,7 @@
 #     }
 
 
-# title_report.py — Gemini 1.5 Flash version
+# title_report.py — Gemini Flash version
 import os
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -669,18 +669,21 @@ from embeddings import case_collection
 
 load_dotenv()
 
-# Configure Gemini securely
+# 1. Fetch the key from the environment
+api_key = os.getenv("GOOGLE_API_KEY")
+
+# 2. Stop the server from crashing silently if the key is missing
+if not api_key:
+    raise ValueError("CRITICAL ERROR: GOOGLE_API_KEY is missing. Add it to Railway Variables or your local .env file.")
+
+# 3. Configure Gemini securely
 genai.configure(api_key=api_key.strip())
 
-# Dynamically ask Google for the active Flash model on your API key
+# 4. Dynamically ask Google for the newest Flash model
 try:
-    # Get a list of all currently active models
     available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    
-    # Grab the first one that contains "-flash" (e.g., 'models/gemini-2.5-flash' or 'models/gemini-3.5-flash')
     flash_model_name = next((m for m in available_models if '-flash' in m), 'gemini-2.5-flash')
     print(f"[Gemini Setup] Successfully locked onto model: {flash_model_name}")
-    
 except Exception as e:
     print(f"[Gemini Setup] Could not list models, falling back to default. Error: {e}")
     flash_model_name = 'gemini-2.5-flash'
@@ -688,6 +691,7 @@ except Exception as e:
 # Initialize the dynamically found model
 gemini_model = genai.GenerativeModel(flash_model_name)
 
+# Keywords used to identify Title Register (OCE) documents by filename
 OCE_KEYWORDS = ["oce", "official copy", "title register", "official copies", "hmlr"]
 
 def is_oce_document(filename: str) -> bool:
