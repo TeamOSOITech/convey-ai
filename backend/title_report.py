@@ -665,14 +665,13 @@
 #
 # WHY MAP-REDUCE:
 #   Legal documents are too long to send to Groq in one request (causes 413 errors).
-#   Instead we split into small batches (MAP), scan each independently, then
-#   consolidate all findings into one clean output (REDUCE).
+#   We split into batches (MAP), scan each independently, then merge results (REDUCE).
 #
-# WHY INTER-BATCH SLEEP:
-#   Firing 20+ Groq calls back-to-back saturates the TPM (tokens per minute) bucket
-#   instantly, causing every call to hit the 429 retry loop and adding minutes of
-#   wait time. A small sleep between MAP calls spreads the load and keeps us
-#   within the TPM limit without needing retries at all.
+# RATE LIMIT REALITY (from Groq dashboard):
+#   - groq/compound: ~30 requests/minute hard cap
+#   - Underlying model (llama-4-scout): ~30K TPM
+#   - Strategy: large batches (fewer calls) + 2.5s sleep between calls (= ~24 req/min)
+#   - 8 batches * (2.5s sleep + ~1s call) = ~28s total — well within Railway's timeout
 
 import os
 import re
@@ -683,27 +682,29 @@ from embeddings import case_collection
 
 load_dotenv()
 
-# Groq client — API key from environment variable
+# Groq client — API key from environment
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # Filename substrings that identify a Title Register (OCE) document
 OCE_KEYWORDS = ["oce", "official copy", "title register", "official copies", "hmlr"]
 
-# MAP batch size — 4000 chars keeps each request well under Groq's 413 size threshold
-# Smaller than before so fewer tokens are consumed per call (helps TPM budget)
-BATCH_SIZE = 4000
+# Large batch size reduces total call count — fewer calls = less chance of hitting
+# groq/compound's 30 req/min cap. 8000 chars + short prompt stays under 413 limit.
+BATCH_SIZE = 8000
 
-# Overlap between batches so content spanning a boundary isn't missed
+# Small overlap so content spanning a batch boundary is captured by both adjacent batches
+# e.g. a covenant that starts at the end of batch N and finishes in batch N+1
 BATCH_OVERLAP = 200
 
-# Seconds to sleep between MAP calls — prevents TPM bucket from being instantly drained
-# by back-to-back requests. 1.5s * 22 batches = ~33s total, well within Railway timeout.
-INTER_BATCH_SLEEP = 1.5
+# 2.5s between MAP calls = 24 req/min — safely under groq/compound's 30 req/min cap.
+# Without this, 8+ calls fire in <1s and immediately exhaust the rate limit bucket.
+INTER_BATCH_SLEEP = 2.5
 
-# Date extraction only needs the very top of the document — dates are always on page 1
+# Date extraction only needs the first page — dates are always at the top of a document
 MAX_CHARS_DATE = 1500
 
-# Cap the combined batch results before the REDUCE call to keep that request small too
+# Cap the combined MAP results before the REDUCE call to prevent the single
+# consolidation request from being too large (many content-rich batches can add up)
 MAX_CHARS_CONSOLIDATION = 8000
 
 
@@ -712,33 +713,35 @@ MAX_CHARS_CONSOLIDATION = 8000
 # ---------------------------------------------------------------------------
 
 def is_oce_document(filename: str) -> bool:
-    """Returns True if filename indicates this is a Title Register (OCE)."""
+    """Returns True if the filename indicates this is a Title Register (OCE)."""
     return any(kw in filename.lower() for kw in OCE_KEYWORDS)
 
 
 def split_into_batches(text: str) -> list:
     """
-    Splits full document text into overlapping BATCH_SIZE-char segments.
-    Overlap ensures content at a batch boundary is covered by both adjacent batches.
+    Splits the full document text into overlapping BATCH_SIZE-char segments.
+    Overlap of BATCH_OVERLAP chars ensures clauses at batch boundaries are
+    captured by both adjacent batches rather than being cut in half.
     """
     batches = []
     start = 0
     while start < len(text):
         batches.append(text[start: start + BATCH_SIZE])
-        # Step forward by BATCH_SIZE minus overlap so next batch re-reads the tail
+        # Step forward by BATCH_SIZE minus the overlap so the next batch
+        # re-reads the last BATCH_OVERLAP chars of the current batch
         start += BATCH_SIZE - BATCH_OVERLAP
     return batches
 
 
 def safe_groq_call(prompt: str, max_tokens: int) -> str:
     """
-    Wraps every Groq API call with retry logic.
+    Wraps every Groq API call with retry logic for transient errors.
 
-    429 (rate limit) — extracts the suggested retry-after from the error message,
-                       sleeps for that duration plus a 2s safety buffer, then retries.
-    413 (too large)  — logs and returns empty string so the caller can skip this batch
-                       rather than looping forever on an unfixable error.
-    Other errors     — short sleep then retry up to max_retries times.
+    429 (rate limit): Parses Groq's suggested retry-after time from the error
+                      message and sleeps for that duration plus a 2s buffer.
+    413 (too large):  Returns empty string immediately — retrying won't help
+                      because the prompt size won't change between attempts.
+    Other errors:     Short sleep then retry, up to max_retries times.
     """
     max_retries = 5
     for attempt in range(max_retries):
@@ -754,7 +757,7 @@ def safe_groq_call(prompt: str, max_tokens: int) -> str:
             error_str = str(e)
 
             if "429" in error_str:
-                # Parse Groq's suggested wait time and add a safety buffer
+                # Parse Groq's suggested wait time; add 2s safety buffer before retrying
                 wait_time = 5.0
                 match_s = re.search(r"try again in ([0-9.]+)s", error_str)
                 match_ms = re.search(r"try again in ([0-9.]+)ms", error_str)
@@ -766,8 +769,8 @@ def safe_groq_call(prompt: str, max_tokens: int) -> str:
                 time.sleep(wait_time)
 
             elif "413" in error_str:
-                # Prompt is still too large — skip this batch, don't retry
-                print(f"[Size Limit] Prompt too large, skipping batch (attempt {attempt + 1})")
+                # Prompt is too large — no point retrying with the same content
+                print(f"[Size Limit] Prompt too large, skipping (attempt {attempt + 1})")
                 return ""
 
             else:
@@ -775,8 +778,8 @@ def safe_groq_call(prompt: str, max_tokens: int) -> str:
                 print(f"[Groq Error] {error_str}")
                 time.sleep(2)
 
-    # All retries exhausted — return empty so caller handles gracefully
-    print("[Groq] Max retries reached, returning empty result")
+    # All retries exhausted — return empty so callers handle gracefully
+    print("[Groq] Max retries reached, returning empty")
     return ""
 
 
@@ -786,20 +789,21 @@ def safe_groq_call(prompt: str, max_tokens: int) -> str:
 
 def extract_date(chunks: list, filename: str, is_oce: bool = False) -> str:
     """
-    Extracts document date using only the first MAX_CHARS_DATE characters.
-    Dates always appear near the top of a document — no need to scan further.
+    Extracts the document date from the first MAX_CHARS_DATE characters only.
+    Dates always appear near the top of a conveyancing document — no batching needed.
 
-    OCE: looks for "entries on register of title on [DATE] at [TIME]"
-    Other: looks for the main execution/signing date of the deed
+    OCE:   Looks for "This official copy shows the entries on the register of
+           title on [DATE] at [TIME]" — NOT the Edition date.
+    Other: Looks for the main execution/signing date of the deed.
     """
-    # Only use the very start of the document — keeps this request tiny
+    # Slice the first 1500 chars — keeps this single request very small
     context = "\n\n".join(chunks)[:MAX_CHARS_DATE]
 
     if is_oce:
-        # OCE-specific prompt — must target search date, NOT the edition date
+        # OCE-specific prompt — must target search date, not edition date
         prompt = (
             "You are reading an Official Copy of Register of Title (HM Land Registry).\n\n"
-            "Find and return the search date. Look for:\n"
+            "Find the search date. Look for:\n"
             '"This official copy shows the entries on the register of title on [DATE] at [TIME]"\n\n'
             "Return ONLY the date+time string. Example: '29 Sep 2016 at 10:08:02'\n"
             "Do NOT return the Edition date — that is a different field.\n"
@@ -807,10 +811,10 @@ def extract_date(chunks: list, filename: str, is_oce: bool = False) -> str:
             f"DOCUMENT:\n{context}"
         )
     else:
-        # Standard deed date extraction
+        # Standard deed execution date extraction
         prompt = (
             f"You are reading a UK legal conveyancing document: {filename}\n\n"
-            "Find and return the date this document was executed (signed/completed).\n"
+            "Find the date this document was executed (signed/completed).\n"
             "Look for: 'dated', 'this deed is made on', 'made the Xth day of [month] [year]'.\n\n"
             "Return ONLY the date string. Example: '25 March 1999'\n"
             "If not found, return exactly: [NOT FOUND]\n\n"
@@ -822,20 +826,20 @@ def extract_date(chunks: list, filename: str, is_oce: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
-# MAP STEP — scan individual batches
+# MAP STEP
 # ---------------------------------------------------------------------------
 
 def scan_batch_for_fields(batch_text: str, filename: str, batch_num: int) -> str:
     """
-    MAP STEP — scans one BATCH_SIZE-char section for the four legal field categories.
+    MAP STEP — scans one BATCH_SIZE-char section of the document for the four
+    legal field categories (Rights Granted, Rights Reserved, Covenants, Provisions).
 
-    Each call is intentionally small (BATCH_SIZE chars + short prompt + low max_tokens)
-    to stay within Groq's TPM limit when many batches are processed in sequence.
-    Returns raw findings, or empty string if the batch is skipped due to size/error.
+    Kept intentionally short (low max_tokens) to minimise TPM consumption per call.
+    We're running many of these — every token saved here matters for the rate limit.
     """
     prompt = (
         f"Scan section {batch_num} of UK legal document: {filename}\n\n"
-        "Extract from THIS SECTION ONLY (write NONE if absent):\n"
+        "Extract from THIS SECTION ONLY (write NONE if not present in this section):\n"
         "RIGHTS GRANTED: [text or NONE]\n"
         "RIGHTS RESERVED: [text or NONE]\n"
         "COVENANTS: [text or NONE]\n"
@@ -843,15 +847,15 @@ def scan_batch_for_fields(batch_text: str, filename: str, batch_num: int) -> str
         "Use exact text, not summaries. OCR may be noisy — interpret intelligently.\n\n"
         f"SECTION:\n{batch_text}"
     )
-    # Low max_tokens (150) — we only need NONE or short extracted snippets per batch
-    # This significantly reduces TPM consumption across 20+ batch calls
+    # max_tokens=150: enough for NONE or a short legal snippet per field
+    # Keeping this low is critical — it's multiplied across every batch call
     return safe_groq_call(prompt, max_tokens=150)
 
 
 def has_content(result: str) -> bool:
     """
-    Returns True if a batch scan found something beyond NONE placeholders.
-    Used to filter empty batches before sending results to the consolidation step.
+    Returns True if a batch scan found anything beyond NONE placeholders.
+    Filters out empty batches so the REDUCE step only processes meaningful content.
     """
     cleaned = (result
                .replace("RIGHTS GRANTED: NONE", "")
@@ -862,28 +866,28 @@ def has_content(result: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# REDUCE STEP — consolidate all batch findings
+# REDUCE STEP
 # ---------------------------------------------------------------------------
 
 def consolidate_findings(partial_results: list, filename: str) -> dict:
     """
-    REDUCE STEP — merges all non-empty batch findings into one clean output.
+    REDUCE STEP — merges all non-empty batch findings into one clean markdown output.
 
-    Filters out empty batches, caps the combined text at MAX_CHARS_CONSOLIDATION
-    to prevent this single consolidation call from exceeding Groq's size limit,
-    then asks the LLM to deduplicate, merge split clauses, and format as markdown.
+    Filters empty batches first, then caps combined text at MAX_CHARS_CONSOLIDATION
+    to ensure this single consolidation call never triggers a 413 error.
+    The LLM deduplicates, merges fragmented clauses, and formats as markdown.
     """
-    # Only pass batches that actually found something to the consolidation prompt
+    # Only include batches that actually found something
     meaningful = [r for r in partial_results if has_content(r)]
 
-    # Nothing found anywhere in the document
+    # Nothing found in any batch — return not-present defaults for all fields
     if not meaningful:
         return {k: "*Not present in this document*"
                 for k in ["rights_granted", "rights_reserved", "covenants", "provisions"]}
 
-    # Join all findings, then hard-cap total size
+    # Join all findings and hard-cap total size
     # Without this cap, a document with many content-rich batches could produce
-    # a consolidation prompt that's too large for Groq
+    # a consolidation prompt that exceeds Groq's size limit
     combined = "\n\n--- NEXT SECTION ---\n\n".join(meaningful)
     combined = combined[:MAX_CHARS_CONSOLIDATION]
 
@@ -891,7 +895,7 @@ def consolidate_findings(partial_results: list, filename: str) -> dict:
         f"Consolidate legal field extractions from different sections of: {filename}\n\n"
         "Rules:\n"
         "- Remove exact duplicates\n"
-        "- Merge fragments of the same clause split across sections\n"
+        "- Merge fragments of the same clause that were split across sections\n"
         "- Format with markdown: **bold** for key terms, numbered lists, "
         "> blockquote for verbatim legal text\n"
         "- Write *Not present in this document* if NONE across all sections\n\n"
@@ -903,17 +907,18 @@ def consolidate_findings(partial_results: list, filename: str) -> dict:
         f"EXTRACTIONS:\n{combined}"
     )
 
-    # Higher max_tokens for the reduce call — this is the final formatted output
+    # Higher max_tokens for REDUCE — this produces the final formatted report content
     raw = safe_groq_call(prompt, max_tokens=1500)
     return parse_field_response(raw)
 
 
 def parse_field_response(raw: str) -> dict:
     """
-    Splits the REDUCE response into a dict by heading.
-    Extracts content between each heading and the start of the next one.
+    Splits the REDUCE response string into a dict keyed by field name.
+    Extracts content between each heading and the start of the next heading.
+    Falls back to not-present default if a heading is missing from the response.
     """
-    # Default to not-present if parsing fails or a field is missing entirely
+    # Default values used when a field is absent or parsing fails
     fields = {
         "rights_granted": "*Not present in this document*",
         "rights_reserved": "*Not present in this document*",
@@ -924,6 +929,7 @@ def parse_field_response(raw: str) -> dict:
     if not raw:
         return fields
 
+    # Map from the exact heading strings the LLM uses to our dict keys
     heading_map = {
         "RIGHTS GRANTED:": "rights_granted",
         "RIGHTS RESERVED:": "rights_reserved",
@@ -960,42 +966,46 @@ def extract_legal_fields(all_chunks: list, filename: str) -> dict:
     """
     Full MAP-REDUCE pipeline for Rights Granted, Rights Reserved, Covenants, Provisions.
 
-    MAP:    Join all ChromaDB chunks → split into BATCH_SIZE batches
-            → one Groq call per batch with INTER_BATCH_SLEEP between calls
-            (sleep prevents rapid-fire calls from draining the TPM bucket)
+    MAP:    Join all ChromaDB chunks into full document text → split into BATCH_SIZE
+            batches → one Groq call per batch, with INTER_BATCH_SLEEP between each.
+            The sleep is essential: it spaces calls at ~24/min, under the 30/min cap.
 
-    REDUCE: Filter to non-empty batches → consolidate into final markdown output
+    REDUCE: Filter to non-empty batch results → one Groq call to consolidate into
+            deduplicated, markdown-formatted final output per field.
     """
     full_text = "\n\n".join(all_chunks)
     batches = split_into_batches(full_text)
-    print(f"[TitleReport] {filename}: scanning {len(batches)} batches "
-          f"({INTER_BATCH_SLEEP}s between each)")
+    print(f"[TitleReport] {filename}: {len(batches)} batches, "
+          f"{INTER_BATCH_SLEEP}s between calls (~{60 / (INTER_BATCH_SLEEP + 1):.0f} req/min)")
 
-    # MAP — one Groq call per batch, with sleep to avoid TPM exhaustion
+    # MAP — scan each batch, sleeping between calls to respect the rate limit
     partial_results = []
     for i, batch in enumerate(batches):
         result = scan_batch_for_fields(batch, filename, batch_num=i + 1)
         partial_results.append(result)
-        # Sleep between calls to spread TPM consumption over time
-        # Without this, 20+ calls fire instantly and saturate the TPM bucket
-        if i < len(batches) - 1:  # no sleep after the final batch
+        # Sleep between calls — without this, all batches fire within seconds and
+        # instantly drain groq/compound's 30 req/min bucket, causing a flood of 429s
+        if i < len(batches) - 1:  # no sleep needed after the last batch
             time.sleep(INTER_BATCH_SLEEP)
 
-    # REDUCE — one Groq call to merge all findings into final output
+    # REDUCE — consolidate all findings into final formatted output
     return consolidate_findings(partial_results, filename)
 
 
 def generate_title_report(title_number: str, selected_filenames: list) -> dict:
     """
-    Main entry point — produces the full Title Report for a set of selected documents.
+    Main entry point — produces the full Title Report for selected documents.
 
     For each document:
-      - Fetches ALL ChromaDB chunks, sorted by chunk_index (document reading order)
-      - Extracts the date from the top of the document (all doc types)
-      - Runs map-reduce field extraction for non-OCE documents
-        (OCE = Title Register, which doesn't contain rights/covenants sections)
+      1. Fetches ALL ChromaDB chunks, sorted by chunk_index (correct page order)
+      2. Extracts the date from the top of the document (fast — no batching needed)
+      3. Runs the full MAP-REDUCE pipeline for non-OCE documents
+         (OCE = Title Register — it doesn't contain rights/covenants sections)
+
+    Returns a structured dict the frontend renders as the Title Report UI.
     """
     # Uppercase inline — never reassign a FastAPI path parameter variable
+    # (reassigning causes Python UnboundLocalError in some FastAPI versions)
     title_number = title_number.upper()
     report_documents = []
 
@@ -1003,7 +1013,8 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
         filename = filename.strip()
 
         # Fetch every stored chunk for this document from ChromaDB
-        # Using .get() not .query() — we want ALL chunks, not just top-N by similarity
+        # Using .get() not .query() — we want ALL chunks, not just the top-N
+        # most semantically similar ones
         results = case_collection.get(
             where={
                 "$and": [
@@ -1014,7 +1025,7 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
             include=["documents", "metadatas"]
         )
 
-        # Document not yet ingested — record the error and continue to next file
+        # Document not yet ingested — record the error and continue to the next file
         if not results["ids"]:
             report_documents.append({
                 "filename": filename,
@@ -1028,14 +1039,16 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
             })
             continue
 
-        # Sort by chunk_index so we read the document in the correct page order
+        # Sort chunks by chunk_index metadata so we read the document in page order
+        # ChromaDB does not guarantee return order, so this sort is always necessary
         chunks_with_meta = list(zip(results["documents"], results["metadatas"]))
         chunks_with_meta.sort(key=lambda x: x[1].get("chunk_index", 0))
         all_chunks = [chunk for chunk, _ in chunks_with_meta]
 
         is_oce = is_oce_document(filename)
 
-        # Use only the first few chunks for date — dates are always on page 1
+        # Date extraction uses only the first few chunks — dates are always on page 1
+        # OCE needs fewer chunks because the search date is always in the header
         date_chunks = all_chunks[:3] if is_oce else all_chunks[:5]
         date = extract_date(date_chunks, filename, is_oce=is_oce)
 
@@ -1043,14 +1056,15 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
             "filename": filename,
             "is_oce": is_oce,
             "date": date,
-            "rights_granted": None,  # None = not applicable (OCE docs have no these sections)
+            "rights_granted": None,  # None = not applicable for OCE documents
             "rights_reserved": None,
             "covenants": None,
             "provisions": None
         }
 
-        # Run map-reduce field extraction for non-OCE documents only
-        # The Title Register (OCE) doesn't contain rights/covenants — those are in the deeds
+        # Only run MAP-REDUCE for non-OCE documents
+        # The Title Register (OCE) records title ownership — it doesn't contain
+        # the rights, covenants or provisions that are found in title deeds
         if not is_oce:
             fields = extract_legal_fields(all_chunks, filename)
             doc_result["rights_granted"] = fields["rights_granted"]
