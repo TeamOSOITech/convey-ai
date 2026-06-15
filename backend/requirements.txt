@@ -13,3 +13,4 @@ websockets
 Pillow
 python-dotenv
 aiofiles
+google-generativeai==0.8.3

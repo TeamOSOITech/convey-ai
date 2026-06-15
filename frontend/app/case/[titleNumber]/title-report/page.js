@@ -73,36 +73,74 @@ export default function TitleReportPage() {
   const clearAll = () => setSelectedFilenames([])
 
   // Send selected filenames to backend and retrieve the structured report
+// Process documents sequentially to avoid Vercel 100s Timeouts!
   const generateReport = async () => {
     if (selectedFilenames.length === 0) return
 
     setGenerating(true)
-    setReport(null)
     setError(null)
 
-    try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/generate-title-report?title_number=${titleNumber}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'ngrok-skip-browser-warning': 'true'
-          },
-          body: JSON.stringify({ selected_filenames: selectedFilenames })
-        }
-      )
+    // Shell for the live updating report
+    const liveReport = {
+      title_number: titleNumber,
+      total_documents: selectedFilenames.length,
+      documents: []
+    }
+    setReport({ ...liveReport })
 
-      const data = await res.json()
-      if (!res.ok) {
-        setError(data.detail || 'Failed to generate report')
-      } else {
-        setReport(data)
+    let hasErrors = false;
+
+    // Loop through selected files and fetch them one at a time
+    for (let i = 0; i < selectedFilenames.length; i++) {
+      const filename = selectedFilenames[i];
+
+      try {
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_BACKEND_URL}/generate-title-report?title_number=${titleNumber}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'ngrok-skip-browser-warning': 'true'
+            },
+            // Send ONLY ONE file to keep the request fast
+            body: JSON.stringify({ selected_filenames: [filename] })
+          }
+        )
+
+        let data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.detail || `Failed to extract ${filename}`);
+        }
+
+        // Successfully extracted! Append it to the live report and update UI
+        if (data.documents && data.documents.length > 0) {
+          liveReport.documents.push(data.documents[0]);
+          setReport({ ...liveReport });
+        }
+
+      } catch (err) {
+        hasErrors = true;
+        // Don't crash the whole screen, just show an error for this specific file
+        liveReport.documents.push({
+            filename: filename,
+            is_oce: false,
+            date: "[ERROR]",
+            error: err.message,
+            rights_granted: "*Failed to extract.*",
+            rights_reserved: "*Failed to extract.*",
+            covenants: "*Failed to extract.*",
+            provisions: "*Failed to extract.*"
+        });
+        setReport({ ...liveReport });
       }
-    } catch (err) {
-      setError('Something went wrong. Please try again.')
-    } finally {
-      setGenerating(false)
+    }
+
+    setGenerating(false)
+    
+    if (hasErrors) {
+        setError("Report generated, but some documents failed to extract.")
     }
   }
 
