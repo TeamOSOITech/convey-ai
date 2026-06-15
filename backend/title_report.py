@@ -670,7 +670,7 @@ from embeddings import case_collection
 load_dotenv()
 
 # Configure Gemini
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 # Using 1.5 Flash: It is lightning fast, has a 1 Million token window, and is free.
 gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
