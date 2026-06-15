@@ -669,10 +669,24 @@ from embeddings import case_collection
 
 load_dotenv()
 
-# Configure Gemini
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-# Using 1.5 Flash: It is lightning fast, has a 1 Million token window, and is free.
-gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+# Configure Gemini securely
+genai.configure(api_key=api_key.strip())
+
+# Dynamically ask Google for the active Flash model on your API key
+try:
+    # Get a list of all currently active models
+    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+    
+    # Grab the first one that contains "-flash" (e.g., 'models/gemini-2.5-flash' or 'models/gemini-3.5-flash')
+    flash_model_name = next((m for m in available_models if '-flash' in m), 'gemini-2.5-flash')
+    print(f"[Gemini Setup] Successfully locked onto model: {flash_model_name}")
+    
+except Exception as e:
+    print(f"[Gemini Setup] Could not list models, falling back to default. Error: {e}")
+    flash_model_name = 'gemini-2.5-flash'
+
+# Initialize the dynamically found model
+gemini_model = genai.GenerativeModel(flash_model_name)
 
 OCE_KEYWORDS = ["oce", "official copy", "title register", "official copies", "hmlr"]
 
