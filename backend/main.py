@@ -15,7 +15,8 @@ from typing import List, Optional
 from zip_processor import extract_zip
 # Find this line near the top of main.py:
 from chatbot import ask_question, raise_enquiry
-
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 # Add this right below it:
 from title_report import generate_title_report
 
@@ -555,14 +556,35 @@ async def debug_sources(title_number: str):
     return {"title_number": title_number.upper(), "sources": sources}
 
 
+# The previous version had no try/except — if title_report.py threw any error
+# (e.g. Groq 413), FastAPI returned an HTML 500 page instead of JSON.
+# Frontend's res.json() then threw, landing in the catch block as "Something went wrong."
+# This version catches all errors and always returns valid JSON so the frontend
+# can display a proper error message instead.
+ 
 @app.post("/generate-title-report")
 async def generate_title_report_route(title_number: str, request: TitleReportRequest):
-    """Generates structured Title Report for selected documents"""
-    result = generate_title_report(
-        title_number.upper(),
-        request.selected_filenames
-    )
-    return result
+    """
+    Generates a structured Title Report for the selected documents.
+    Always returns JSON — even on failure — so the frontend can show a real error.
+    """
+    try:
+        result = generate_title_report(
+            title_number.upper(),  # inline .upper() — never reassign FastAPI path params
+            request.selected_filenames
+        )
+        return result
+ 
+    except Exception as e:
+        # Log the full error server-side for Railway logs
+        print(f"[TitleReport Error] {title_number}: {str(e)}")
+ 
+        # Return structured JSON error so frontend's !res.ok branch catches it
+        # and displays data.detail rather than throwing and hitting the catch block
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Report generation failed: {str(e)}"}
+        )
 
 
 @app.post("/ingest-letters")
