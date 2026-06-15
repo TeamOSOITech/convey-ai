@@ -679,14 +679,17 @@ if not api_key:
 # 3. Configure Gemini securely
 genai.configure(api_key=api_key.strip())
 
-# 4. Dynamically ask Google for the newest Flash model
+# 4. Dynamically ask Google for the 3.1-Flash-LITE model
 try:
     available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    flash_model_name = next((m for m in available_models if '-flash' in m), 'gemini-2.5-flash')
-    print(f"[Gemini Setup] Successfully locked onto model: {flash_model_name}")
+    
+    # Explicitly target the 3.1-flash-lite version
+    flash_model_name = next((m for m in available_models if '3.1-flash-lite' in m), 'gemini-3.1-flash-lite')
+    
+    print(f"[Gemini Setup] Successfully locked onto high-limit model: {flash_model_name}")
 except Exception as e:
     print(f"[Gemini Setup] Could not list models, falling back to default. Error: {e}")
-    flash_model_name = 'gemini-2.5-flash'
+    flash_model_name = 'gemini-3.1-flash-lite'
 
 # Initialize the dynamically found model
 gemini_model = genai.GenerativeModel(flash_model_name)

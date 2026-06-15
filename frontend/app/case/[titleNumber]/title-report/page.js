@@ -409,15 +409,8 @@ export default function TitleReportPage() {
                             ) : (
                               // Render LLM markdown output with proper formatting
                               // prose class from Tailwind Typography gives clean text styling
-                              <div className="text-sm text-gray-800 leading-relaxed
-                                [&_strong]:font-semibold [&_strong]:text-gray-900
-                                [&_ol]:list-decimal [&_ol]:ml-5 [&_ol]:space-y-1
-                                [&_ul]:list-disc [&_ul]:ml-5 [&_ul]:space-y-1
-                                [&_blockquote]:border-l-4 [&_blockquote]:border-indigo-200
-                                [&_blockquote]:pl-3 [&_blockquote]:text-gray-600
-                                [&_blockquote]:italic [&_blockquote]:my-2
-                                [&_p]:mb-2 [&_p:last-child]:mb-0">
-                                <ReactMarkdown>{value}</ReactMarkdown>
+                              <div className="prose prose-sm max-w-none prose-indigo text-gray-800">
+                              <ReactMarkdown>{value}</ReactMarkdown>
                               </div>
                             )}
                           </div>
