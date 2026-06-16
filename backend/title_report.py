@@ -731,7 +731,9 @@ def extract_legal_fields(full_text: str, filename: str) -> dict:
 TASK: Extract the following four categories from the document below. 
 Format using markdown (**bold** for terms, > blockquotes for clauses).
 If a category is genuinely not in the document, write: *Not present in this document*
+WRITE ENOUGH text under each category that a lawyer can understand and act upon that information, no cruical information should be left behind.
 
+CRITICAL: You MUST use proper markdown spacing. Leave a blank empty line between every paragraph and list item.
 Respond using EXACTLY these four headings:
 RIGHTS GRANTED:
 [text]

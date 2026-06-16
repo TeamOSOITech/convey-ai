@@ -736,7 +736,7 @@ PRIORITY RULES:
 1. FIRST, attempt to answer the question using ONLY the facts in the [CURRENTLY OPEN DOCUMENT CONTEXT].
 2. If the answer is completely missing from the open document, fallback to the [OTHER CASE DOCUMENTS CONTEXT].
 3. Give direct, precise answers using UK legal terminology. Do not say "Based on the documents...".
-4. ALWAYS cite the [Source: filename] where you found the answer.
+4. ALWAYS cite the [Source: filename] and [InPage Ref.: Heading Under the text is present] where you found the answer.
 5. If the answer is in neither context, reply: "I cannot find this information in the case documents."
 
 [CURRENTLY OPEN DOCUMENT CONTEXT]
