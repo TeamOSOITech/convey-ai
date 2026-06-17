@@ -733,19 +733,14 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
     current_context = "\n\n".join(current_doc_chunks)
     other_context = "\n\n".join(other_doc_chunks)
 
-    # ── Build deduplicated source list for the frontend ───────────────────────
-    # Each chunk string starts with "[Source: <filename>]" (injected by get_current/diverse_context).
-    # We parse that prefix out and deduplicate, preserving order (open doc first).
-    seen_sources = set()
-    ordered_sources = []
+    # ── Build a set of valid source names from retrieved chunks ─────────────
+    # Used after the LLM responds to validate any filenames it mentions,
+    # ensuring we never surface a hallucinated filename as a clickable button.
+    valid_sources = set()
     for chunk in (current_doc_chunks + other_doc_chunks):
-        # Chunk format: "[Source: filename]\ntext..."
         if chunk.startswith("[Source: "):
             end = chunk.index("]")
-            source_name = chunk[9:end]  # strip "[Source: " prefix
-            if source_name not in seen_sources:
-                seen_sources.add(source_name)
-                ordered_sources.append(source_name)
+            valid_sources.add(chunk[9:end])  # strip "[Source: " prefix
 
     system_prompt = f"""You are a UK conveyancing legal assistant. You are reviewing OCR-extracted legal property documents.
 Answer questions based ONLY on the context provided below.
@@ -774,10 +769,27 @@ PRIORITY RULES:
         max_tokens=2048
     )
 
+    answer_text = response.choices[0].message.content
+
+    # ── Extract only sources the LLM actually cited in its answer ────────────
+    # The system prompt instructs the LLM to write [Source: filename] inline.
+    # We regex-scan the answer for those tags, deduplicate in order of first
+    # mention, then cross-check against valid_sources so hallucinated filenames
+    # never appear as clickable buttons.
+    import re
+    mentioned_sources = []
+    seen_mentioned = set()
+    for match in re.finditer(r'\[Source:\s*([^\]]+)\]', answer_text):
+        filename = match.group(1).strip()
+        # Only surface filenames that were actually in the retrieved chunks
+        if filename in valid_sources and filename not in seen_mentioned:
+            seen_mentioned.add(filename)
+            mentioned_sources.append(filename)
+
     return {
         "type": "question",
-        "answer": response.choices[0].message.content,
-        "sources": ordered_sources,  # list of filenames the answer was drawn from
+        "answer": answer_text,
+        "sources": mentioned_sources,  # only filenames the LLM actually cited
         "title_number": title_number,
         "chunks_used": len(current_doc_chunks) + len(other_doc_chunks)
     }
