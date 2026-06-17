@@ -320,33 +320,42 @@ export default function ChatbotPage() {
                   </div>
                 )}
 
-                {/* ── START OF NEW BUTTON LOGIC ── */}
+                {/* ── START OF UPGRADED BUTTON LOGIC ── */}
                 {msg.role === 'assistant' && msg.type !== 'error' ? (
                   <div>
-                    {/* Print text but hide the [Source: ...] tag */}
+                    {/* 1. Hide the tag (Case-insensitive, handles bolding and weird spaces) */}
                     <p className="text-sm text-gray-800 whitespace-pre-wrap">
-                      {msg.content.replace(/\[Source:.*?\]/g, '').trim()}
+                      {msg.content.replace(/\*?\*?\[Source:\s*.*?\]\*?\*?/gi, '').trim()}
                     </p>
 
-                    {/* Render the button if the tag exists */}
-                    {msg.content.match(/\[Source:\s*(.*?)\]/) && (
+                    {/* 2. Render the button if ANY variation of the tag exists */}
+                    {msg.content.match(/\[Source:\s*(.*?)\]/i) && (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.preventDefault()
-                          const filename = msg.content.match(/\[Source:\s*(.*?)\]/)[1].trim()
+                          const match = msg.content.match(/\[Source:\s*(.*?)\]/i)
+                          if (!match) return;
+                          
+                          // Clean up the filename for a fuzzy search
+                          const targetFile = match[1].trim().toLowerCase()
                           const docs = caseData?.documents || []
-                          const doc = docs.find(d => d.filename === filename)
+                          
+                          // Fuzzy search: Case-insensitive match, or check if name is included
+                          const doc = docs.find(d => 
+                            d.filename.trim().toLowerCase() === targetFile || 
+                            d.filename.trim().toLowerCase().includes(targetFile)
+                          )
                           
                           if (doc) {
                             setSelectedDoc(doc)
                           } else {
-                            alert(`Document '${filename}' not found.`)
+                            alert(`Document '${match[1].trim()}' not found in the left panel.`)
                           }
                         }}
                         className="flex items-center gap-1 text-blue-600 hover:text-blue-800 underline decoration-blue-300 underline-offset-2 bg-transparent border-none p-0 mt-3 text-sm font-medium cursor-pointer"
                       >
-                        📄 View {msg.content.match(/\[Source:\s*(.*?)\]/)[1]}
+                        📄 View {msg.content.match(/\[Source:\s*(.*?)\]/i)[1].trim()}
                       </button>
                     )}
                   </div>
@@ -354,7 +363,7 @@ export default function ChatbotPage() {
                   // Normal text for user/error messages
                   <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.content}</p>
                 )}
-                {/* ── END OF NEW BUTTON LOGIC ── */}
+                {/* ── END OF UPGRADED BUTTON LOGIC ── */}
 
                 {/* Copy button for assistant messages */}
                 {msg.role === 'assistant' && msg.type !== 'error' && (
