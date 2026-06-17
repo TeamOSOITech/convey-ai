@@ -296,53 +296,78 @@ export default function ChatbotPage() {
                     <span className="text-xs text-green-700">{msg.enquiry_topic}</span>
                   </div>
                 )}
-                <ReactMarkdown
-  className="text-sm text-gray-800 prose prose-sm max-w-none prose-p:leading-snug"
-  components={{
-    a: ({ node, href, children, ...props }) => {
-      // 1. Safely decode the URL
-      let cleanHref = href || '';
-      try { cleanHref = decodeURIComponent(cleanHref); } catch (e) {}
+                {messages.map((msg, i) => (
+            <div
+              key={i}
+              className={msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
+            >
+              <div className={`max-w-[85%] ${
+                msg.role === 'user'
+                  ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm px-4 py-2 text-sm'
+                  : msg.type === 'enquiry'
+                    ? 'bg-green-50 border border-green-200 rounded-2xl rounded-tl-sm p-3'
+                    : msg.type === 'error'
+                      ? 'bg-red-50 border border-red-200 rounded-2xl rounded-tl-sm p-3'
+                      : 'bg-gray-100 rounded-2xl rounded-tl-sm p-3'
+              }`}>
+                {/* Enquiry code badge */}
+                {msg.type === 'enquiry' && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="bg-green-600 text-white text-xs px-2 py-0.5 rounded-full font-medium">
+                      {msg.enquiry_code}
+                    </span>
+                    <span className="text-xs text-green-700">{msg.enquiry_topic}</span>
+                  </div>
+                )}
 
-      // 2. Check if it is our custom source link
-      if (cleanHref.includes('#doc|')) {
-        
-        // 3. Extract the exact filename, ignoring Next.js prefixes and closing brackets
-        const filename = cleanHref.split('#doc|')[1].replace(/>$/, '').trim();
+                {/* ── START OF NEW BUTTON LOGIC ── */}
+                {msg.role === 'assistant' && msg.type !== 'error' ? (
+                  <div>
+                    {/* Print text but hide the [Source: ...] tag */}
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap">
+                      {msg.content.replace(/\[Source:.*?\]/g, '').trim()}
+                    </p>
 
-        // 4. Return a BUTTON, not a link. It cannot redirect.
-        return (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              const docs = caseData?.documents || [];
-              const doc = docs.find((d) => d.filename === filename);
-              
-              if (doc) {
-                setSelectedDoc(doc); // Opens in middle panel
-              } else {
-                alert("Document not found in case documents.");
-              }
-            }}
-            className="cursor-pointer text-blue-600 underline decoration-blue-300 underline-offset-2 hover:text-blue-800 bg-transparent border-none p-0 inline text-left text-sm font-medium"
-          >
-            {children}
-          </button>
-        );
-      }
+                    {/* Render the button if the tag exists */}
+                    {msg.content.match(/\[Source:\s*(.*?)\]/) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          const filename = msg.content.match(/\[Source:\s*(.*?)\]/)[1].trim()
+                          const docs = caseData?.documents || []
+                          const doc = docs.find(d => d.filename === filename)
+                          
+                          if (doc) {
+                            setSelectedDoc(doc)
+                          } else {
+                            alert(`Document '${filename}' not found.`)
+                          }
+                        }}
+                        className="flex items-center gap-1 text-blue-600 hover:text-blue-800 underline decoration-blue-300 underline-offset-2 bg-transparent border-none p-0 mt-3 text-sm font-medium cursor-pointer"
+                      >
+                        📄 View {msg.content.match(/\[Source:\s*(.*?)\]/)[1]}
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  // Normal text for user/error messages
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.content}</p>
+                )}
+                {/* ── END OF NEW BUTTON LOGIC ── */}
 
-      // 5. Standard fallback for normal internet links
-      return (
-        <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline" {...props}>
-          {children}
-        </a>
-      );
-    }
-  }}
->
-  {msg.content}
-</ReactMarkdown>
+                {/* Copy button for assistant messages */}
+                {msg.role === 'assistant' && msg.type !== 'error' && (
+                  <button
+                    onClick={() => copyToClipboard(msg.content)}
+                    className="mt-2 text-xs text-gray-400 hover:text-gray-600"
+                  >
+                    Copy
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
                 {/* Copy button for assistant messages */}
                 {msg.role === 'assistant' && msg.type !== 'error' && (
                   <button
