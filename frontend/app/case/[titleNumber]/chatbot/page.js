@@ -14,7 +14,7 @@ export default function ChatbotPage() {
   const { titleNumber } = useParams()
   const [caseData, setCaseData] = useState(null)
   const [selectedDoc, setSelectedDoc] = useState(null)
-  const [pdfSearch, setPdfSearch] = useState('')   // drives the #search= fragment on the iframe
+  const [pdfPage, setPdfPage] = useState(null)    // drives the #page=N fragment on the iframe
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -49,7 +49,7 @@ export default function ChatbotPage() {
   }
 
   // Opens a document in the middle-panel viewer by filename.
-  // Clears any active #search fragment so the PDF loads clean.
+  // Clears any active #page fragment so the PDF loads from page 1.
   const openSourceDocument = (filename) => {
     if (!filename) return
     const doc = caseData?.documents?.find(
@@ -57,22 +57,41 @@ export default function ChatbotPage() {
     )
     if (doc) {
       setSelectedDoc(doc)
-      setPdfSearch('')   // clear search so the doc opens at page 1
+      setPdfPage(null)   // clear page jump so the doc opens at the beginning
     } else {
       alert(`Document '${filename}' not found.`)
     }
   }
 
-  // Opens a document AND jumps to a specific phrase via Chrome's #search= fragment.
-  // Used by InPage Ref pills — single click loads the right doc and highlights the phrase.
-  const openCitation = (filename, ref) => {
+  // Opens a document AND jumps to the estimated page containing the ref phrase.
+  // Calls /find-page on the backend which searches ChromaDB chunks for the phrase,
+  // then uses #page=N — the one PDF fragment Chrome's native viewer actually supports.
+  const openCitation = async (filename, ref) => {
     if (!filename || !ref) return
     const doc = caseData?.documents?.find(
       d => d.filename.trim().toLowerCase() === filename.trim().toLowerCase()
     )
-    if (doc) {
-      setSelectedDoc(doc)
-      setPdfSearch(ref)  // triggers #search=ref on the iframe src
+    if (!doc) return
+
+    // Load the document immediately so the user sees it switching
+    setSelectedDoc(doc)
+    setPdfPage(null)  // reset while we look up the page
+
+    try {
+      // Ask the backend to search chunk texts and return an estimated page number
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_BACKEND_URL}/find-page?` +
+        `title_number=${encodeURIComponent(titleNumber)}` +
+        `&filename=${encodeURIComponent(filename)}` +
+        `&query=${encodeURIComponent(ref)}`,
+        { headers: { 'ngrok-skip-browser-warning': 'true' } }
+      )
+      const data = await res.json()
+      // Set the page — the iframe key will remount to apply #page=N
+      setPdfPage(data.page || 1)
+    } catch {
+      // If the lookup fails, the doc is still open — just no page jump
+      setPdfPage(1)
     }
   }
 
@@ -267,16 +286,17 @@ export default function ChatbotPage() {
           </p>
         </div>
 
-        {/* PDF iframe — src includes #search= fragment when an InPage Ref is active.
-             Chrome's built-in PDF viewer will open the find bar and jump to the phrase.
-             Switching to a plain source (no ref) clears pdfSearch so the PDF loads clean. */}
+        {/* PDF iframe — #page=N fragment used when an InPage Ref is clicked.
+             Chrome's built-in PDF viewer supports #page=N and jumps to that page.
+             The key prop forces a full iframe remount whenever the URL or page changes,
+             ensuring the browser actually loads the new fragment. */}
         <div className="flex-1 overflow-hidden">
           {selectedDoc && selectedDoc.file_url ? (
             <iframe
-              key={selectedDoc.file_url + pdfSearch}  // key forces remount on search change
+              key={selectedDoc.file_url + (pdfPage ?? '')}  // remount on doc or page change
               src={
-                pdfSearch
-                  ? `${selectedDoc.file_url}#search=${encodeURIComponent(pdfSearch)}`
+                pdfPage
+                  ? `${selectedDoc.file_url}#page=${pdfPage}`
                   : selectedDoc.file_url
               }
               className="w-full h-full border-0"

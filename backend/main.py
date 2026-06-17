@@ -556,6 +556,78 @@ async def debug_sources(title_number: str):
     return {"title_number": title_number.upper(), "sources": sources}
 
 
+@app.get("/find-page")
+async def find_page(title_number: str, filename: str, query: str):
+    """
+    Finds the estimated PDF page number for a given search phrase within a document.
+
+    Used by the InPage Ref pills in the chatbot — Chrome's native PDF viewer
+    supports #page=N but NOT #search=text, so we convert the phrase to a page.
+
+    Strategy:
+      1. Fetch all chunks for this document from ChromaDB, sorted by chunk_index
+      2. Try exact substring match first (fast, works when OCR is clean)
+      3. Fall back to difflib fuzzy ratio if no exact match found
+      4. Estimate page = floor(best_chunk_index / CHUNKS_PER_PAGE) + 1
+         Legal A4 docs: ~600 chars/chunk, ~3000 chars/page → ~5 chunks/page
+    """
+    from difflib import SequenceMatcher
+
+    # Number of 600-char chunks that typically fit on one A4 legal page
+    # Adjust if your docs are unusually dense or sparse
+    CHUNKS_PER_PAGE = 5
+
+    tn = title_number.upper()
+
+    # Fetch every chunk for this specific document
+    results = case_collection.get(
+        where={
+            "$and": [
+                {"title_number": {"$eq": tn}},
+                {"source":       {"$eq": filename}}
+            ]
+        },
+        include=["documents", "metadatas"]
+    )
+
+    # If nothing found, default to page 1 gracefully
+    if not results["ids"]:
+        return {"page": 1, "found": False, "reason": "no chunks found for document"}
+
+    # Sort chunks into document reading order
+    chunks_with_meta = list(zip(results["documents"], results["metadatas"]))
+    chunks_with_meta.sort(key=lambda x: x[1].get("chunk_index", 0))
+
+    query_lower = query.lower()
+    best_score  = 0.0
+    best_index  = 0   # positional index in the sorted list (not stored chunk_index)
+
+    for i, (chunk_text, _) in enumerate(chunks_with_meta):
+        chunk_lower = chunk_text.lower()
+
+        # Exact substring match — if found, stop immediately
+        if query_lower in chunk_lower:
+            best_index = i
+            best_score = 1.0
+            break
+
+        # Fuzzy ratio against the whole chunk text
+        score = SequenceMatcher(None, query_lower, chunk_lower).ratio()
+        if score > best_score:
+            best_score = score
+            best_index = i
+
+    # Convert chunk position to an estimated 1-based page number
+    estimated_page = (best_index // CHUNKS_PER_PAGE) + 1
+
+    return {
+        "page":        estimated_page,
+        "chunk_index": best_index,
+        "match_score": round(best_score, 3),
+        "found":       best_score > 0.05   # very low threshold — almost always true
+    }
+
+
 # The previous version had no try/except — if title_report.py threw any error
 # (e.g. Groq 413), FastAPI returned an HTML 500 page instead of JSON.
 # Frontend's res.json() then threw, landing in the catch block as "Something went wrong."
