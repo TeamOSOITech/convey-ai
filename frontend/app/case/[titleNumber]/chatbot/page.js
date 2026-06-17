@@ -47,6 +47,18 @@ export default function ChatbotPage() {
     }
   }
 
+  const openSourceDocument = (filename) => {
+    if (!filename) return; 
+    const doc = caseData?.documents?.find(
+      d => d.filename.trim().toLowerCase() === filename.trim().toLowerCase()
+    )
+    if (doc) {
+      setSelectedDoc(doc)
+    } else {
+      alert(`Document '${filename}' not found.`)
+    }
+  }
+
   const sendMessage = async (type) => {
     if (!input.trim()) return
 
@@ -273,30 +285,7 @@ export default function ChatbotPage() {
             </div>
           )}
 
-          {messages.map((msg, i) => (
-            <div
-              key={i}
-              className={msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
-            >
-              <div className={`max-w-[85%] ${
-                msg.role === 'user'
-                  ? 'bg-blue-600 text-white rounded-2xl rounded-tr-sm px-4 py-2 text-sm'
-                  : msg.type === 'enquiry'
-                    ? 'bg-green-50 border border-green-200 rounded-2xl rounded-tl-sm p-3'
-                    : msg.type === 'error'
-                      ? 'bg-red-50 border border-red-200 rounded-2xl rounded-tl-sm p-3'
-                      : 'bg-gray-100 rounded-2xl rounded-tl-sm p-3'
-              }`}>
-                {/* Enquiry code badge */}
-                {msg.type === 'enquiry' && (
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="bg-green-600 text-white text-xs px-2 py-0.5 rounded-full font-medium">
-                      {msg.enquiry_code}
-                    </span>
-                    <span className="text-xs text-green-700">{msg.enquiry_topic}</span>
-                  </div>
-                )}
-                {messages.map((msg, i) => (
+{messages.map((msg, i) => (
             <div
               key={i}
               className={msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
@@ -320,64 +309,30 @@ export default function ChatbotPage() {
                   </div>
                 )}
 
-                {/* ── START OF UPGRADED BUTTON LOGIC ── */}
-                {msg.role === 'assistant' && msg.type !== 'error' ? (
-                  <div>
-                    {/* 1. Hide the tag (Case-insensitive, handles bolding and weird spaces) */}
+                {/* THE NEW CLICKABLE SOURCE CODE */}
+                {msg.role === 'assistant' && /\[Source:.*?\]/i.test(msg.content) ? (
+                  <>
                     <p className="text-sm text-gray-800 whitespace-pre-wrap">
-                      {msg.content.replace(/\*?\*?\[Source:\s*.*?\]\*?\*?/gi, '').trim()}
+                      {msg.content.replace(/\[Source:.*?\]/gi, '').trim()}
                     </p>
-
-                    {/* 2. Render the button if ANY variation of the tag exists */}
-                    {msg.content.match(/\[Source:\s*(.*?)\]/i) && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          const match = msg.content.match(/\[Source:\s*(.*?)\]/i)
-                          if (!match) return;
-                          
-                          // Clean up the filename for a fuzzy search
-                          const targetFile = match[1].trim().toLowerCase()
-                          const docs = caseData?.documents || []
-                          
-                          // Fuzzy search: Case-insensitive match, or check if name is included
-                          const doc = docs.find(d => 
-                            d.filename.trim().toLowerCase() === targetFile || 
-                            d.filename.trim().toLowerCase().includes(targetFile)
-                          )
-                          
-                          if (doc) {
-                            setSelectedDoc(doc)
-                          } else {
-                            alert(`Document '${match[1].trim()}' not found in the left panel.`)
-                          }
-                        }}
-                        className="flex items-center gap-1 text-blue-600 hover:text-blue-800 underline decoration-blue-300 underline-offset-2 bg-transparent border-none p-0 mt-3 text-sm font-medium cursor-pointer"
-                      >
-                        📄 View {msg.content.match(/\[Source:\s*(.*?)\]/i)[1].trim()}
-                      </button>
-                    )}
-                  </div>
+                    <button
+                      onClick={() => 
+                        openSourceDocument(
+                          msg.content.match(/\[Source:\s*(.*?)\]/i)?.[1] || ''
+                        )
+                      }
+                      className="flex items-center gap-1 text-blue-600 hover:text-blue-800 underline decoration-blue-300 underline-offset-2 bg-transparent border-none p-0 mt-3 text-sm font-medium cursor-pointer"
+                    >
+                      📄 View {msg.content.match(/\[Source:\s*(.*?)\]/i)?.[1]}
+                    </button>
+                  </>
                 ) : (
-                  // Normal text for user/error messages
-                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.content}</p>
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">
+                    {msg.content}
+                  </p>
                 )}
-                {/* ── END OF UPGRADED BUTTON LOGIC ── */}
 
-                {/* Copy button for assistant messages */}
-                {msg.role === 'assistant' && msg.type !== 'error' && (
-                  <button
-                    onClick={() => copyToClipboard(msg.content)}
-                    className="mt-2 text-xs text-gray-400 hover:text-gray-600"
-                  >
-                    Copy
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-                {/* Copy button for assistant messages */}
+                {/* Copy button */}
                 {msg.role === 'assistant' && msg.type !== 'error' && (
                   <button
                     onClick={() => copyToClipboard(msg.content)}
