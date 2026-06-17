@@ -8,6 +8,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
+import ReactMarkdown from 'react-markdown'
 
 export default function ChatbotPage() {
   const { titleNumber } = useParams()
@@ -295,7 +296,53 @@ export default function ChatbotPage() {
                     <span className="text-xs text-green-700">{msg.enquiry_topic}</span>
                   </div>
                 )}
-                <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.content}</p>
+                <ReactMarkdown
+  className="text-sm text-gray-800 prose prose-sm max-w-none prose-p:leading-snug"
+  components={{
+    a: ({ node, href, children, ...props }) => {
+      // 1. Safely decode the URL
+      let cleanHref = href || '';
+      try { cleanHref = decodeURIComponent(cleanHref); } catch (e) {}
+
+      // 2. Check if it is our custom source link
+      if (cleanHref.includes('#doc|')) {
+        
+        // 3. Extract the exact filename, ignoring Next.js prefixes and closing brackets
+        const filename = cleanHref.split('#doc|')[1].replace(/>$/, '').trim();
+
+        // 4. Return a BUTTON, not a link. It cannot redirect.
+        return (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              const docs = caseData?.documents || [];
+              const doc = docs.find((d) => d.filename === filename);
+              
+              if (doc) {
+                setSelectedDoc(doc); // Opens in middle panel
+              } else {
+                alert("Document not found in case documents.");
+              }
+            }}
+            className="cursor-pointer text-blue-600 underline decoration-blue-300 underline-offset-2 hover:text-blue-800 bg-transparent border-none p-0 inline text-left text-sm font-medium"
+          >
+            {children}
+          </button>
+        );
+      }
+
+      // 5. Standard fallback for normal internet links
+      return (
+        <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline" {...props}>
+          {children}
+        </a>
+      );
+    }
+  }}
+>
+  {msg.content}
+</ReactMarkdown>
                 {/* Copy button for assistant messages */}
                 {msg.role === 'assistant' && msg.type !== 'error' && (
                   <button
