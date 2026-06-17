@@ -711,7 +711,11 @@ def get_diverse_context(query_embedding: list, title_number: str, max_per_doc: i
 
 
 def ask_question(question: str, title_number: str, history: list = [], current_document: str = None) -> dict:
-    """General Q&A with Context-Weighted RAG."""
+    """
+    General Q&A with Context-Weighted RAG.
+    Returns the answer text plus a deduplicated list of source filenames
+    so the frontend can render them as clickable document buttons.
+    """
     query_embedding = model.encode([question]).tolist()
     
     current_doc_chunks = []
@@ -728,6 +732,20 @@ def ask_question(question: str, title_number: str, history: list = [], current_d
 
     current_context = "\n\n".join(current_doc_chunks)
     other_context = "\n\n".join(other_doc_chunks)
+
+    # ── Build deduplicated source list for the frontend ───────────────────────
+    # Each chunk string starts with "[Source: <filename>]" (injected by get_current/diverse_context).
+    # We parse that prefix out and deduplicate, preserving order (open doc first).
+    seen_sources = set()
+    ordered_sources = []
+    for chunk in (current_doc_chunks + other_doc_chunks):
+        # Chunk format: "[Source: filename]\ntext..."
+        if chunk.startswith("[Source: "):
+            end = chunk.index("]")
+            source_name = chunk[9:end]  # strip "[Source: " prefix
+            if source_name not in seen_sources:
+                seen_sources.add(source_name)
+                ordered_sources.append(source_name)
 
     system_prompt = f"""You are a UK conveyancing legal assistant. You are reviewing OCR-extracted legal property documents.
 Answer questions based ONLY on the context provided below.
@@ -759,6 +777,7 @@ PRIORITY RULES:
     return {
         "type": "question",
         "answer": response.choices[0].message.content,
+        "sources": ordered_sources,  # list of filenames the answer was drawn from
         "title_number": title_number,
         "chunks_used": len(current_doc_chunks) + len(other_doc_chunks)
     }

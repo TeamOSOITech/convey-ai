@@ -14,3 +14,4 @@ frontend/.env.local
 
 # General
 .DS_Store
+node_modules/

@@ -47,7 +47,7 @@ export default function ChatbotPage() {
     }
   }
 
-  const openSourceDocument = (filename) => {
+const openSourceDocument = (filename) => {
     if (!filename) return; 
     const doc = caseData?.documents?.find(
       d => d.filename.trim().toLowerCase() === filename.trim().toLowerCase()
@@ -99,7 +99,8 @@ export default function ChatbotPage() {
         setMessages(prev => [...prev, {
           role: 'assistant',
           type: 'answer',
-          content: data.answer
+          content: data.answer,
+          sources: data.sources || []  // structured list of source filenames from backend
         }])
 
       } else {
@@ -285,7 +286,7 @@ export default function ChatbotPage() {
             </div>
           )}
 
-{messages.map((msg, i) => (
+          {messages.map((msg, i) => (
             <div
               key={i}
               className={msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
@@ -308,31 +309,47 @@ export default function ChatbotPage() {
                     <span className="text-xs text-green-700">{msg.enquiry_topic}</span>
                   </div>
                 )}
-
-                {/* THE NEW CLICKABLE SOURCE CODE */}
-                {msg.role === 'assistant' && /\[Source:.*?\]/i.test(msg.content) ? (
-                  <>
-                    <p className="text-sm text-gray-800 whitespace-pre-wrap">
-                      {msg.content.replace(/\[Source:.*?\]/gi, '').trim()}
-                    </p>
-                    <button
-                      onClick={() => 
-                        openSourceDocument(
-                          msg.content.match(/\[Source:\s*(.*?)\]/i)?.[1] || ''
-                        )
-                      }
-                      className="flex items-center gap-1 text-blue-600 hover:text-blue-800 underline decoration-blue-300 underline-offset-2 bg-transparent border-none p-0 mt-3 text-sm font-medium cursor-pointer"
-                    >
-                      📄 View {msg.content.match(/\[Source:\s*(.*?)\]/i)?.[1]}
-                    </button>
-                  </>
+                {/* Render answer/error text — use ReactMarkdown so inline [Source:] refs render nicely */}
+                {msg.role === 'assistant' ? (
+                  <div className="text-sm text-gray-800 prose prose-sm max-w-none">
+                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  </div>
                 ) : (
-                  <p className="text-sm text-gray-800 whitespace-pre-wrap">
-                    {msg.content}
-                  </p>
+                  // User bubble — plain text is fine
+                  <p className="text-sm text-white">{msg.content}</p>
                 )}
 
-                {/* Copy button */}
+                {/* ── SOURCE DOCUMENT PILLS ─────────────────────────────────────────
+                     Shown only on answer messages that have associated sources.
+                     Each pill is a button that calls openSourceDocument() to swap
+                     the middle-panel PDF viewer to that document — no redirect,
+                     no new tab, everything stays in the same page session.
+                ─────────────────────────────────────────────────────────────────── */}
+                {msg.type === 'answer' && msg.sources && msg.sources.length > 0 && (
+                  <div className="mt-3 pt-2 border-t border-gray-200">
+                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
+                      📄 Sources
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {msg.sources.map((src, si) => (
+                        <button
+                          key={si}
+                          onClick={() => openSourceDocument(src)}
+                          title={`Open ${src} in the viewer`}
+                          className="inline-flex items-center gap-1 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 border border-blue-200 text-blue-700 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer max-w-[200px]"
+                        >
+                          {/* Document icon */}
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          {/* Truncate long filenames gracefully */}
+                          <span className="truncate">{src}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {/* Copy button for assistant messages */}
                 {msg.role === 'assistant' && msg.type !== 'error' && (
                   <button
                     onClick={() => copyToClipboard(msg.content)}
