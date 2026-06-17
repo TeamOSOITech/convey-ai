@@ -749,7 +749,7 @@ PRIORITY RULES:
 1. FIRST, attempt to answer the question using ONLY the facts in the [CURRENTLY OPEN DOCUMENT CONTEXT].
 2. If the answer is completely missing from the open document, fallback to the [OTHER CASE DOCUMENTS CONTEXT].
 3. Give direct, precise answers using UK legal terminology. Do not say "Based on the documents...".
-4. ALWAYS cite the [Source: filename] and [InPage Ref.: Heading Under the text is present] where you found the answer. Give anser strictly in the format mentioned, example:- [Source: filename].
+4. ALWAYS cite the [Source: filename] and [InPage Ref.: Heading Under the text is present] where you found the answer. Give answer strictly in the format mentioned, example:- [Source: filename]. Also mention both in the last of your response with both of them side by side example:- [Source: filename] [InPage Ref.: Heading Under the text is present].
 5. If the answer is in neither context, reply: "I cannot find this information in the case documents."
 
 [CURRENTLY OPEN DOCUMENT CONTEXT]
@@ -771,25 +771,59 @@ PRIORITY RULES:
 
     answer_text = response.choices[0].message.content
 
-    # ── Extract only sources the LLM actually cited in its answer ────────────
-    # The system prompt instructs the LLM to write [Source: filename] inline.
-    # We regex-scan the answer for those tags, deduplicate in order of first
-    # mention, then cross-check against valid_sources so hallucinated filenames
-    # never appear as clickable buttons.
     import re
-    mentioned_sources = []
+
+    # ── Step 1: Collect all [Source: filename] mentions with char positions ───
+    # We need positions so we can pair each InPage Ref with its nearest preceding
+    # source. Cross-check against valid_sources to reject hallucinated filenames.
+    source_positions = []  # list of (char_pos, filename) in order of appearance
     seen_mentioned = set()
+    mentioned_sources = []
+
     for match in re.finditer(r'\[Source:\s*([^\]]+)\]', answer_text):
         filename = match.group(1).strip()
-        # Only surface filenames that were actually in the retrieved chunks
-        if filename in valid_sources and filename not in seen_mentioned:
-            seen_mentioned.add(filename)
-            mentioned_sources.append(filename)
+        if filename in valid_sources:
+            source_positions.append((match.start(), filename))
+            # Deduplicated list for the source pills
+            if filename not in seen_mentioned:
+                seen_mentioned.add(filename)
+                mentioned_sources.append(filename)
+
+    # ── Step 2: Collect [InPage Ref.: phrase] mentions with char positions ────
+    # For each ref, walk backward through source_positions to find the nearest
+    # source that appears before it in the text. This correctly pairs e.g.:
+    #   "...covenant [Source: Transfer.pdf] [InPage Ref.: Restrictive Covenants]..."
+    # If no preceding source exists, fall back to the first valid source overall.
+    citations = []       # list of {source, ref} dicts — shown as InPage Ref pills
+    seen_refs = set()    # deduplicate by ref text
+
+    for ref_match in re.finditer(r'\[InPage Ref\.:\s*([^\]]+)\]', answer_text):
+        ref_text = ref_match.group(1).strip()
+        if not ref_text or ref_text in seen_refs:
+            continue
+
+        ref_pos = ref_match.start()
+
+        # Find the latest source citation that appears BEFORE this ref in the text
+        paired_source = None
+        for src_pos, src_name in reversed(source_positions):
+            if src_pos < ref_pos:
+                paired_source = src_name
+                break
+
+        # Fallback: if ref appears before any source tag, use the first valid source
+        if paired_source is None and source_positions:
+            paired_source = source_positions[0][1]
+
+        if paired_source:
+            citations.append({"source": paired_source, "ref": ref_text})
+            seen_refs.add(ref_text)
 
     return {
         "type": "question",
         "answer": answer_text,
-        "sources": mentioned_sources,  # only filenames the LLM actually cited
+        "sources": mentioned_sources,   # deduplicated source filenames for source pills
+        "citations": citations,          # [{source, ref}] pairs for InPage Ref pills
         "title_number": title_number,
         "chunks_used": len(current_doc_chunks) + len(other_doc_chunks)
     }

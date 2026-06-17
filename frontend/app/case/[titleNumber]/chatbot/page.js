@@ -14,6 +14,7 @@ export default function ChatbotPage() {
   const { titleNumber } = useParams()
   const [caseData, setCaseData] = useState(null)
   const [selectedDoc, setSelectedDoc] = useState(null)
+  const [pdfSearch, setPdfSearch] = useState('')   // drives the #search= fragment on the iframe
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -47,15 +48,31 @@ export default function ChatbotPage() {
     }
   }
 
-const openSourceDocument = (filename) => {
-    if (!filename) return; 
+  // Opens a document in the middle-panel viewer by filename.
+  // Clears any active #search fragment so the PDF loads clean.
+  const openSourceDocument = (filename) => {
+    if (!filename) return
     const doc = caseData?.documents?.find(
       d => d.filename.trim().toLowerCase() === filename.trim().toLowerCase()
     )
     if (doc) {
       setSelectedDoc(doc)
+      setPdfSearch('')   // clear search so the doc opens at page 1
     } else {
       alert(`Document '${filename}' not found.`)
+    }
+  }
+
+  // Opens a document AND jumps to a specific phrase via Chrome's #search= fragment.
+  // Used by InPage Ref pills — single click loads the right doc and highlights the phrase.
+  const openCitation = (filename, ref) => {
+    if (!filename || !ref) return
+    const doc = caseData?.documents?.find(
+      d => d.filename.trim().toLowerCase() === filename.trim().toLowerCase()
+    )
+    if (doc) {
+      setSelectedDoc(doc)
+      setPdfSearch(ref)  // triggers #search=ref on the iframe src
     }
   }
 
@@ -100,7 +117,8 @@ const openSourceDocument = (filename) => {
           role: 'assistant',
           type: 'answer',
           content: data.answer,
-          sources: data.sources || []  // structured list of source filenames from backend
+          sources: data.sources || [],      // filenames LLM cited → source pills
+          citations: data.citations || []   // [{source, ref}] → InPage Ref pills
         }])
 
       } else {
@@ -249,12 +267,18 @@ const openSourceDocument = (filename) => {
           </p>
         </div>
 
-        {/* PDF iframe fills remaining height */}
+        {/* PDF iframe — src includes #search= fragment when an InPage Ref is active.
+             Chrome's built-in PDF viewer will open the find bar and jump to the phrase.
+             Switching to a plain source (no ref) clears pdfSearch so the PDF loads clean. */}
         <div className="flex-1 overflow-hidden">
           {selectedDoc && selectedDoc.file_url ? (
-            // Points to Railway /view-pdf/ endpoint which serves the OCR'd PDF inline
             <iframe
-              src={selectedDoc.file_url}
+              key={selectedDoc.file_url + pdfSearch}  // key forces remount on search change
+              src={
+                pdfSearch
+                  ? `${selectedDoc.file_url}#search=${encodeURIComponent(pdfSearch)}`
+                  : selectedDoc.file_url
+              }
               className="w-full h-full border-0"
               title={selectedDoc.filename}
             />
@@ -338,12 +362,41 @@ const openSourceDocument = (filename) => {
                           title={`Open ${src} in the viewer`}
                           className="inline-flex items-center gap-1 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 border border-blue-200 text-blue-700 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer max-w-[200px]"
                         >
-                          {/* Document icon */}
                           <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                           </svg>
-                          {/* Truncate long filenames gracefully */}
                           <span className="truncate">{src}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── INPAGE REF PILLS ────────────────────────────────────────────
+                     Each citation is a {source, ref} pair from the backend.
+                     Clicking loads the paired source doc AND applies #search=ref
+                     to the iframe, making Chrome's PDF viewer jump to that phrase.
+                     Purple colour distinguishes them from blue source pills.
+                ─────────────────────────────────────────────────────────────────── */}
+                {msg.type === 'answer' && msg.citations && msg.citations.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider mb-1.5">
+                      📍 In-Page References
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {msg.citations.map((cite, ci) => (
+                        <button
+                          key={ci}
+                          onClick={() => openCitation(cite.source, cite.ref)}
+                          title={`Jump to "${cite.ref}" in ${cite.source}`}
+                          className="inline-flex items-center gap-1 bg-purple-50 hover:bg-purple-100 active:bg-purple-200 border border-purple-200 text-purple-700 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer max-w-[200px]"
+                        >
+                          {/* Location pin icon */}
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                          <span className="truncate">{cite.ref}</span>
                         </button>
                       ))}
                     </div>
