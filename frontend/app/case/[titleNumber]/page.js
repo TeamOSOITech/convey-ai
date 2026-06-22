@@ -446,6 +446,15 @@ export default function CaseDashboard() {
       color: 'indigo'
     },
     {
+      id: 'title-check',
+      title: 'Title Check',
+      description: 'Select a TA6, TA10 or TA13 form. AI reads the checkboxes, applies your firm\'s checklist rules, and drafts the required enquiries for your review.',
+      icon: '✅',
+      path: `/case/${titleNumber}/title-check`,
+      available: true,
+      color: 'orange'
+    },
+    {
       id: 'letters',
       title: 'Letter Generator',
       description: 'Generate standard conveyancing letters — Report on Title, Completion Letters, Client Care and more.',
@@ -511,6 +520,13 @@ export default function CaseDashboard() {
       icon: 'bg-emerald-100',
       hover: 'hover:border-emerald-300',
       badge: 'bg-emerald-600'
+    },
+    orange: {
+      bg: 'bg-orange-50',
+      border: 'border-orange-200',
+      icon: 'bg-orange-100',
+      hover: 'hover:border-orange-400',
+      badge: 'bg-orange-600'
     }
   }
 

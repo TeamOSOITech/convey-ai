@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 # Add this right below it:
 from title_report import generate_title_report
+from title_check import run_title_check
 
 
 # Create required folders if they don't exist
@@ -665,3 +666,41 @@ async def ingest_letters_route():
     from ingest_letters import ingest_all_letters
     ingest_all_letters()
     return {"success": True, "message": "Letter templates ingested"}
+
+
+# ── Title Check endpoint ──────────────────────────────────────────────────────
+# Runs the AI-assisted Title Check pipeline on a single uploaded TA6/TA10/TA13.
+# Steps performed (see title_check.py for detail):
+#   1. Reconstructs full document text from ChromaDB chunks
+#   2. Classifies form type (TA6 / TA10 / TA13)
+#   3. Gemini extracts checkbox states and seller notes as structured JSON
+#   4. Hardcoded Rules Engine maps states → enquiry codes (no LLM here)
+#   5. Fetches enquiry templates from format_library ChromaDB collection
+#   6. Gemini personalises drafts where templates have placeholders
+# Returns findings list for the human Review Board in the frontend.
+class TitleCheckRequest(BaseModel):
+    title_number: str   # e.g. "EX332661"
+    filename:     str   # exact filename as stored in ChromaDB
+
+@app.post("/title-check")
+async def title_check_route(req: TitleCheckRequest):
+    """
+    Runs the Title Check pipeline on a single TA6/TA10/TA13 document.
+    Returns a findings list that the frontend displays as the Review Board.
+    Each finding includes: enquiry_code, topic, reason, draft, status='pending'
+    """
+    try:
+        result = run_title_check(
+            filename=req.filename,
+            title_number=req.title_number
+        )
+        # run_title_check returns {"error": "..."} if something went wrong upstream
+        if "error" in result:
+            return JSONResponse(status_code=400, content=result)
+        return result
+    except Exception as e:
+        print(f"[/title-check] Unhandled error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Title check failed: {str(e)}"}
+        )
