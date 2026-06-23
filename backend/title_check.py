@@ -1,21 +1,32 @@
 # title_check.py — AI-assisted Title Check & Enquiry Generation Tool
 #
-# Architecture (Global Rule Pool):
+# Architecture (Global Rule Pool + Gemini Vision):
 #   All rules from the firm's Title Check Checklist are stored as a single flat list
 #   in GLOBAL_RULE_POOL below. There are NO form-specific silos (TA6/TA10/TA13).
 #
 # Pipeline (per document):
-#   1. get_all_chunks_text()          → reconstruct full document text from ChromaDB chunks
-#   2. classify_document()            → identify form type for context only (not for rule selection)
-#   3. evaluate_document_against_rules() → Gemini reads the document + ALL rules simultaneously
-#                                          Returns a JSON list of which rules are triggered and why
-#   4. fetch_enquiry_template()       → for each triggered code, fetch template from ChromaDB
-#   5. personalise_draft()            → Gemini fills any placeholders using seller's specific details
-#   6. run_title_check()              → orchestrates the pipeline and returns findings for the UI
+#   1. resolve_pdf_path()              → find the processed PDF file on disk
+#   2. pdf_to_images()                 → render each PDF page to a PIL Image via PyMuPDF
+#   3. classify_document()             → identify form type for context labelling only
+#   4. evaluate_document_vision()      → send page IMAGES + GLOBAL_RULE_POOL to Gemini
+#                                        Gemini visually reads ticked checkboxes like a human
+#                                        Returns a JSON list of triggered rules + reasons
+#   5. fetch_enquiry_template()        → fetch draft template from ChromaDB by exact code ID
+#   6. personalise_draft()             → Gemini fills placeholders with seller-specific details
+#   7. run_title_check()               → orchestrates the pipeline, returns findings for the UI
+#
+# Why Vision instead of OCR text?
+#   Standard OCR (ocrmypdf) cannot reliably represent ticked checkboxes as text.
+#   A ticked box may appear as a garbled character, a filled square, or nothing at all.
+#   Sending the raw page images to Gemini lets it SEE the checkboxes visually,
+#   the same way a human solicitor would — eliminating the OCR checkbox problem entirely.
 
 import os
 import re
+import io
 import json
+import fitz                          # PyMuPDF — converts PDF pages to images
+from PIL import Image
 import google.generativeai as genai
 from dotenv import load_dotenv
 from embeddings import case_collection, format_collection
@@ -45,6 +56,48 @@ except Exception as e:
     model_name = 'gemini-3.1-flash-lite'
 
 gemini_model = genai.GenerativeModel(model_name)
+
+# ── File Path Resolution ──────────────────────────────────────────────────────
+# Processed PDFs are stored at {DATA_DIR}/processed_pdfs/{filename}
+# DATA_DIR defaults to "./data" locally and is set to "/app/data" on Railway
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+
+def resolve_pdf_path(filename: str) -> str:
+    """
+    Returns the absolute path to the processed PDF file on disk.
+    Returns None if the file does not exist (triggers text fallback).
+    """
+    path = os.path.join(DATA_DIR, "processed_pdfs", filename)
+    return path if os.path.exists(path) else None
+
+
+# ── PDF to Images ─────────────────────────────────────────────────────────────
+
+def pdf_to_images(pdf_path: str, dpi: int = 120, max_pages: int = 40) -> list:
+    """
+    Renders each page of a PDF as a PIL Image using PyMuPDF.
+
+    dpi=120 is sufficient for Gemini to read checkbox states and handwriting
+    without generating unnecessarily large image payloads.
+
+    max_pages=40 is a safety cap — TA6/TA10/TA13 forms are typically 5–16 pages.
+    Returns a list of PIL Image objects, one per page.
+    """
+    doc = fitz.open(pdf_path)
+    images = []
+    scale = dpi / 72.0          # PyMuPDF default is 72 DPI
+    mat = fitz.Matrix(scale, scale)
+
+    for page_num in range(min(len(doc), max_pages)):
+        page = doc[page_num]
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        img_bytes = pix.tobytes("png")
+        img = Image.open(io.BytesIO(img_bytes))
+        images.append(img)
+
+    doc.close()
+    print(f"[TitleCheck] Rendered {len(images)} page image(s) from PDF")
+    return images
 
 
 # ── Global Rule Pool ──────────────────────────────────────────────────────────
@@ -168,95 +221,119 @@ def classify_document(full_text: str, filename: str) -> str:
 
 # ── Core Evaluation Function ──────────────────────────────────────────────────
 
-def evaluate_document_against_rules(full_text: str, form_type: str, filename: str) -> list:
+def _parse_gemini_json(raw: str, source_label: str) -> list:
     """
-    Sends the full document text AND the entire GLOBAL_RULE_POOL to Gemini in a
-    single prompt. Gemini evaluates the document holistically and identifies which
-    rules from the pool are triggered by what it finds in the document.
-
-    No rules are pre-filtered by form type — Gemini sees ALL rules and picks the
-    ones that apply. This means if a TA6 also has contract information, the
-    CONTRACT rules will be evaluated too.
-
-    Returns a list of triggered findings:
-    [
-      {
-        "enquiry_code": "E11",
-        "reason": "The Property Information Form has not been signed — the signature box on page 3 is blank.",
-        "evidence": "Signature box on page 3 is empty."
-      },
-      ...
-    ]
+    Shared helper: strips markdown fences from Gemini output, parses JSON,
+    validates structure, and returns a clean list of findings.
+    Called by both the vision and text evaluation functions.
     """
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
 
-    prompt = f"""You are a UK conveyancing solicitor conducting a formal title check on an OCR-scanned document.
+    try:
+        triggered = json.loads(raw)
+    except json.JSONDecodeError as e:
+        print(f"[TitleCheck:{source_label}] JSON parse error: {e}")
+        print(f"[TitleCheck:{source_label}] Raw output (first 500 chars): {raw[:500]}")
+        return []
 
-IMPORTANT — OCR LIMITATIONS:
-This document was scanned and processed through OCR software. As a result:
-- Ticked checkboxes may appear as: ✓, ✗, X, ■, □, [X], [✓], filled characters, or completely garbled text
-- Unticked checkboxes may appear as empty boxes, blank spaces, or missing entirely
-- Handwritten signatures or dates may appear as garbled characters, smudged text, or blank areas
-- Some sections may be partially illegible or show OCR artefacts
-You must use CONTEXTUAL REASONING — look at surrounding text, form structure, and what is ABSENT
-rather than relying on clean tick mark symbols. For example, if a signature line shows no legible name
-or date, treat it as unsigned.
+    validated = []
+    for item in triggered:
+        if isinstance(item, dict) and "enquiry_code" in item:
+            validated.append({
+                "enquiry_code": str(item.get("enquiry_code", "")).strip(),
+                "reason":       str(item.get("reason", "")).strip(),
+                "evidence":     str(item.get("evidence", "")).strip()
+            })
 
-You have been given:
-1. A scanned legal document (OCR text): {filename} — classified as: {form_type}
-2. A complete list of rules from the firm's Title Check Checklist
+    print(f"[TitleCheck:{source_label}] {len(validated)} rules triggered")
+    return validated
 
+
+def _build_evaluation_prompt(form_type: str, filename: str, extra_instruction: str = "") -> str:
+    """
+    Returns the common evaluation prompt used by both the vision and text paths.
+    extra_instruction is appended before the rules to give mode-specific guidance.
+    """
+    return f"""You are a UK conveyancing solicitor conducting a formal title check.
+
+Document: {filename} — Form type: {form_type}
+{extra_instruction}
 Your task:
-- Read through the document carefully, accounting for OCR limitations.
-- For each rule in the checklist, determine whether the document triggers that rule.
-- A rule is triggered when the document shows a problem, missing item, or condition that matches the rule description.
+- Evaluate the document against every rule in the checklist below.
+- Trigger a rule only when the document shows a problem, missing item, or condition that matches the rule.
 - Do NOT trigger a rule if the document clearly shows the condition is satisfied.
 - Do NOT trigger rules that are clearly irrelevant to this type of document.
-- When uncertain due to poor OCR quality, lean towards triggering the rule (the solicitor will verify).
+- If uncertain, lean towards triggering the rule — the solicitor will verify using the PDF viewer.
 
-IMPORTANT: Return ONLY a valid JSON array (no markdown, no explanation).
-Each triggered rule must be an object with exactly these three keys:
-- "enquiry_code": the code string from the rule (e.g. "E11")
-- "reason": a single sentence explaining why this specific rule was triggered, referencing what you saw (or didn't see) in the document
-- "evidence": a short quote or specific detail from the document that supports the trigger — if the trigger is based on an ABSENCE (e.g. blank signature field), describe what is missing
+Return ONLY a valid JSON array (no markdown, no explanation).
+Each triggered rule must have exactly these three keys:
+- "enquiry_code": the code string (e.g. "E11")
+- "reason": one sentence explaining why the rule was triggered, referencing what you observed
+- "evidence": a specific detail — a quote, a page reference, or a description of what is absent
 
-If NO rules are triggered, return an empty array: []
+If NO rules are triggered, return: []
 
 === CHECKLIST RULES ===
 {GLOBAL_RULE_POOL}
+"""
 
-=== DOCUMENT TEXT ===
-{full_text}"""
+
+def evaluate_document_vision(page_images: list, form_type: str, filename: str) -> list:
+    """
+    PRIMARY evaluation path — sends actual PDF page images to Gemini.
+
+    Gemini can visually see ticked checkboxes, handwritten dates, signatures,
+    and blank fields exactly as a human solicitor would.
+    This completely bypasses the OCR checkbox representation problem.
+
+    page_images: list of PIL Image objects (one per page)
+    Returns a list of triggered findings: [{enquiry_code, reason, evidence}, ...]
+    """
+    vision_instruction = """You are looking at scanned images of a legal form. Each image is one page.
+You can see the actual checkboxes, tick marks, handwriting, and signatures visually.
+Look carefully at each page for:
+- Ticked boxes (may appear as ✓, ✗, X, a filled square, or a handwritten mark inside a box)
+- Unticked or empty boxes (blank squares with no mark inside)
+- Signature fields (look for a handwritten name or whether the line is blank)
+- Date fields (look for a written date or whether the field is empty)
+- "Give details" text boxes (check whether they contain written text or are blank)
+
+"""
+    prompt_text = _build_evaluation_prompt(form_type, filename, vision_instruction)
+
+    try:
+        # Gemini multimodal: pass text prompt + all page images as a single content list
+        content_parts = [prompt_text] + page_images
+        response = gemini_model.generate_content(content_parts)
+        return _parse_gemini_json(response.text, "vision")
+    except Exception as e:
+        print(f"[TitleCheck:vision] Gemini vision call failed: {e}")
+        return []
+
+
+def evaluate_document_text(full_text: str, form_type: str, filename: str) -> list:
+    """
+    FALLBACK evaluation path — used when the PDF file is not found on disk.
+    Sends the OCR text to Gemini with instructions to handle garbled checkbox output.
+    Less accurate for checkboxes but always available as a safety net.
+    """
+    text_instruction = """IMPORTANT — OCR LIMITATIONS:
+This text was extracted by OCR software from a scanned form. As a result:
+- Ticked checkboxes may appear as garbled characters, filled squares, or nothing at all
+- Blank signature/date fields may appear as blank lines or be absent from the text
+Use contextual reasoning — consider form structure and what is ABSENT, not just what is present.
+
+"""
+    prompt = _build_evaluation_prompt(form_type, filename, text_instruction) + f"=== DOCUMENT TEXT ===\n{full_text}"
 
     try:
         response = gemini_model.generate_content(prompt)
-        raw = response.text.strip()
-
-        # Strip markdown code fences if Gemini wraps output in them
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw)
-
-        triggered = json.loads(raw)
-
-        # Validate structure — ensure we have a list of dicts with required keys
-        validated = []
-        for item in triggered:
-            if isinstance(item, dict) and "enquiry_code" in item:
-                validated.append({
-                    "enquiry_code": str(item.get("enquiry_code", "")).strip(),
-                    "reason":       str(item.get("reason", "")).strip(),
-                    "evidence":     str(item.get("evidence", "")).strip()
-                })
-
-        print(f"[TitleCheck] Gemini triggered {len(validated)} rules from global pool")
-        return validated
-
-    except json.JSONDecodeError as e:
-        print(f"[TitleCheck] JSON parse error: {e}")
-        print(f"[TitleCheck] Raw Gemini output (first 500 chars): {raw[:500]}")
-        return []
+        return _parse_gemini_json(response.text, "text-fallback")
     except Exception as e:
-        print(f"[TitleCheck] evaluate_document_against_rules failed: {e}")
+        print(f"[TitleCheck:text-fallback] Gemini call failed: {e}")
         return []
 
 
@@ -374,9 +451,10 @@ def run_title_check(filename: str, title_number: str) -> dict:
     Orchestrates the full Title Check pipeline for one document.
 
     Steps:
-      1. Reconstruct full document text from ChromaDB chunks
+      1. Resolve PDF file path on disk
       2. Classify document type (context only — does not restrict rules evaluated)
-      3. Send full text + GLOBAL_RULE_POOL to Gemini — Gemini identifies triggered rules
+      3a. PRIMARY:  Convert PDF pages to images → send to Gemini Vision
+      3b. FALLBACK: If PDF not on disk, send OCR text from ChromaDB to Gemini
       4. For each triggered rule: fetch template from ChromaDB + personalise with Gemini
       5. Return structured findings for the frontend Review Board
 
@@ -384,12 +462,13 @@ def run_title_check(filename: str, title_number: str) -> dict:
     {
       "form_type": "TA6",
       "filename": "ta6.pdf",
+      "evaluation_mode": "vision" | "text-fallback",
       "findings": [
         {
           "enquiry_code": "E11",
           "topic": "Property Information Form — not signed and dated",
-          "reason": "The form has not been signed — the signature box is blank.",
-          "evidence": "Signature box on page 3 is empty.",
+          "reason": "The signature field on page 16 is blank.",
+          "evidence": "Page 16 signature box contains no handwritten name or date.",
           "draft": "We note that the Property Information Form has not been...",
           "status": "pending"
         },
@@ -399,22 +478,41 @@ def run_title_check(filename: str, title_number: str) -> dict:
     """
     print(f"[TitleCheck] Starting check for '{filename}' in case {title_number}")
 
-    # Step 1: Reconstruct full text from ChromaDB chunks
-    full_text = get_all_chunks_text(title_number, filename)
-    if not full_text:
-        return {
-            "error": (
-                f"No text found in ChromaDB for '{filename}'. "
-                f"Please ensure the document has been uploaded and processed correctly."
-            )
-        }
+    # Step 1: Try to find the processed PDF on disk for Vision evaluation
+    pdf_path = resolve_pdf_path(filename)
 
-    # Step 2: Classify for context labelling only
-    form_type = classify_document(full_text, filename)
+    # Step 2: Classify document type — for context labelling, not rule filtering
+    # We still need some text for classification if pdf_path not found
+    # so always fetch chunks (used as fallback text anyway)
+    full_text = get_all_chunks_text(title_number, filename)
+    form_type = classify_document(full_text or "", filename)
     print(f"[TitleCheck] Document classified as: {form_type}")
 
-    # Step 3: Gemini evaluates document against the full GLOBAL_RULE_POOL
-    triggered = evaluate_document_against_rules(full_text, form_type, filename)
+    # Step 3: Evaluate — Vision primary, text fallback
+    if pdf_path:
+        print(f"[TitleCheck] PDF found at {pdf_path} — using Gemini Vision")
+        page_images = pdf_to_images(pdf_path)
+        if page_images:
+            triggered = evaluate_document_vision(page_images, form_type, filename)
+            evaluation_mode = "vision"
+        else:
+            # PDF found but rendering failed — fall back to text
+            print("[TitleCheck] Image rendering failed — falling back to text")
+            triggered = evaluate_document_text(full_text, form_type, filename)
+            evaluation_mode = "text-fallback"
+    else:
+        # PDF not on disk (e.g. Railway restarted and wiped ephemeral storage)
+        # Fall back to OCR text from ChromaDB
+        if not full_text:
+            return {
+                "error": (
+                    f"Could not find '{filename}' on disk or in ChromaDB. "
+                    f"Please re-upload and process the document."
+                )
+            }
+        print("[TitleCheck] PDF not on disk — falling back to OCR text")
+        triggered = evaluate_document_text(full_text, form_type, filename)
+        evaluation_mode = "text-fallback"
 
     # Step 4 + 5: Fetch templates and personalise each draft
     findings = []
@@ -433,15 +531,16 @@ def run_title_check(filename: str, title_number: str) -> dict:
             "enquiry_code": code,
             "topic":        template["topic"],
             "reason":       reason,
-            "evidence":     evidence,   # shown in the Review Board as the "Why triggered" detail
+            "evidence":     evidence,
             "draft":        draft,
-            "status":       "pending"   # frontend sets to "approved" / "edited" / "discarded"
+            "status":       "pending"   # frontend changes to "approved" / "edited" / "discarded"
         })
 
-    print(f"[TitleCheck] Pipeline complete. {len(findings)} findings returned.")
+    print(f"[TitleCheck] Pipeline complete ({evaluation_mode}). {len(findings)} findings returned.")
 
     return {
-        "form_type": form_type,
-        "filename":  filename,
-        "findings":  findings
+        "form_type":        form_type,
+        "filename":         filename,
+        "evaluation_mode":  evaluation_mode,   # shown in UI so solicitor knows which path ran
+        "findings":         findings
     }

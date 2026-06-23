@@ -34,6 +34,7 @@ export default function TitleCheckPage() {
   // Pipeline state
   const [phase,        setPhase]        = useState('select')  // 'select' | 'running' | 'review' | 'generate'
   const [runError,     setRunError]     = useState(null)
+  const [evaluationMode, setEvaluationMode] = useState(null)  // 'vision' | 'text-fallback'
 
   // Findings returned by the backend — each finding has: enquiry_code, topic, reason, draft, status
   // The user can change status to 'approved' | 'edited' | 'discarded'
@@ -100,6 +101,7 @@ export default function TitleCheckPage() {
 
       // Initialise each finding as 'pending' — user must action all of them
       setFindings(data.findings || [])
+      setEvaluationMode(data.evaluation_mode || null)
       setPhase(data.findings?.length > 0 ? 'review' : 'done_clean')
 
     } catch (err) {
@@ -321,7 +323,17 @@ export default function TitleCheckPage() {
             <p className="text-xs text-gray-400 mt-0.5">
               {phase === 'select'   && 'Select a document and run the check.'}
               {phase === 'running'  && 'AI is reading the form...'}
-              {phase === 'review'   && `${findings.length} issue${findings.length !== 1 ? 's' : ''} found · ${pendingCount} pending`}
+              {phase === 'review'   && (
+            <span className="flex items-center gap-2">
+              <span>{findings.length} issue{findings.length !== 1 ? 's' : ''} found · {pendingCount} pending</span>
+              {evaluationMode === 'vision' && (
+                <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium">👁 Vision</span>
+              )}
+              {evaluationMode === 'text-fallback' && (
+                <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded-full font-medium">⚠ Text fallback</span>
+              )}
+            </span>
+          )}
               {phase === 'done_clean' && '✅ No issues found in this document.'}
               {phase === 'generate' && 'Final report ready.'}
             </p>
