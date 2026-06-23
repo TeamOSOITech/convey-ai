@@ -94,19 +94,53 @@ async def ingest_formats_route():
 
 @app.get("/view-pdf/{filename}")
 async def view_pdf(filename: str):
-    # Use DATA_DIR so it works both locally and on Railway volume
-    # No title_number here — removed the erroneous .upper() call
-    file_path = f"{DATA_DIR}/processed_pdfs/{filename}"
-    if not os.path.exists(file_path):
-        return {"error": "File not found", "looked_for": file_path}
+    """
+    Serves a processed PDF file for inline viewing in the browser.
+
+    Security: Uses pathlib to resolve the canonical absolute path and verifies
+    it stays within the intended 'processed_pdfs' directory, preventing path
+    traversal attacks (e.g. ../../.env).
+    """
+    import pathlib
+
+    # Reject obvious traversal attempts fast — before touching the filesystem
+    if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    # Build the allowed base directory and resolve both to absolute canonical paths
+    base_dir = pathlib.Path(DATA_DIR).resolve() / "processed_pdfs"
+    requested_path = (base_dir / filename).resolve()
+
+    # Verify the resolved path is still inside the allowed base directory.
+    # This catches encoded traversal like %2e%2e/ that slips past the string check above.
+    if not str(requested_path).startswith(str(base_dir)):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    if not requested_path.exists():
+        # Do NOT reveal the server-side path in the error response
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Safely encode the filename for the Content-Disposition header to prevent
+    # header injection via newline characters in filenames
+    import urllib.parse
+    safe_filename = urllib.parse.quote(filename)
+
     return FileResponse(
-        path=file_path,
+        path=str(requested_path),
         media_type="application/pdf",
         headers={
-            "Content-Disposition": "inline; filename=" + filename,
+            "Content-Disposition": f'inline; filename="{safe_filename}"',
             "Content-Type": "application/pdf",
-            "X-Frame-Options": "ALLOWALL",
-            "Access-Control-Allow-Origin": "*"
+            # Allow ONLY our Vercel frontend to embed this PDF in an iframe.
+            # frame-ancestors is more precise than X-Frame-Options and supports
+            # multiple trusted origins. 'self' covers local dev (localhost:3000
+            # is handled by the wildcard). ALLOWALL was removed — it allowed
+            # any website to embed client legal documents.
+            "Content-Security-Policy": (
+                "frame-ancestors 'self' "
+                "https://convey-ai-mauve.vercel.app "
+                "http://localhost:3000"
+            ),
         }
     )
 
