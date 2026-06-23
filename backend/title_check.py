@@ -1,14 +1,17 @@
 # title_check.py — AI-assisted Title Check & Enquiry Generation Tool
 #
+# Architecture (Global Rule Pool):
+#   All rules from the firm's Title Check Checklist are stored as a single flat list
+#   in GLOBAL_RULE_POOL below. There are NO form-specific silos (TA6/TA10/TA13).
+#
 # Pipeline (per document):
-#   1. classify_document()   → identify form type from text (TA6, TA10, TA13, etc.)
-#   2. extract_form_fields() → Gemini reads the OCR text and returns a structured JSON
-#                              of checkbox states and free-text notes from the form
-#   3. apply_rules_engine()  → hardcoded IF/THEN rules based on your Title Check Checklist
-#                              Each rule maps a checkbox state → enquiry code to trigger
-#   4. draft_enquiries()     → fetch template text from ChromaDB format_library, weave in
-#                              the seller's specific details extracted by Gemini
-#   5. run_title_check()     → orchestrates the whole pipeline for one document
+#   1. get_all_chunks_text()          → reconstruct full document text from ChromaDB chunks
+#   2. classify_document()            → identify form type for context only (not for rule selection)
+#   3. evaluate_document_against_rules() → Gemini reads the document + ALL rules simultaneously
+#                                          Returns a JSON list of which rules are triggered and why
+#   4. fetch_enquiry_template()       → for each triggered code, fetch template from ChromaDB
+#   5. personalise_draft()            → Gemini fills any placeholders using seller's specific details
+#   6. run_title_check()              → orchestrates the pipeline and returns findings for the UI
 
 import os
 import re
@@ -20,8 +23,6 @@ from embeddings import case_collection, format_collection
 load_dotenv()
 
 # ── Gemini Setup ──────────────────────────────────────────────────────────────
-# Reuse the same Gemini model already configured in title_report.py
-# We need the 1M token context window for reading full forms
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
     raise ValueError("CRITICAL ERROR: GOOGLE_API_KEY missing from environment.")
@@ -33,7 +34,7 @@ try:
         m.name for m in genai.list_models()
         if 'generateContent' in m.supported_generation_methods
     ]
-    # Use the Flash-Lite model — sufficient for form extraction and cheap
+    # Use Flash-Lite — sufficient for form analysis; keeps cost low
     model_name = next(
         (m for m in available_models if '3.1-flash-lite' in m),
         'gemini-3.1-flash-lite'
@@ -46,29 +47,118 @@ except Exception as e:
 gemini_model = genai.GenerativeModel(model_name)
 
 
-# ── Document Type Keywords ────────────────────────────────────────────────────
-# Used by classify_document() to identify which type of form was uploaded
+# ── Global Rule Pool ──────────────────────────────────────────────────────────
+# This is the single source of truth for ALL checklist rules.
+# It is a flat list — NOT split by form type. The LLM evaluates the uploaded
+# document against this entire pool simultaneously.
+#
+# Each rule follows the format:
+#   CODE | TRIGGER CONDITION (when to raise this enquiry)
+#
+# To add a new rule: simply append a new line to this string. No code changes needed.
+# To edit a rule: update the description here. Nothing else needs to change.
+#
+# Source: Your firm's "TITLE CHECK CHECKLIST — FREEHOLD PROPERTY" PDF.
+
+GLOBAL_RULE_POOL = """
+A1  | Trigger if the freehold title absolute is not confirmed in the title register.
+A2a | Trigger if the property description in the title register does not match the contract plan.
+A2b | Trigger if the title plan is unclear, indecipherable, or missing from the official copies.
+A2c | Trigger if there is no filed plan and the description is only by verbal description.
+A2d | Trigger if the title plan does not include areas referred to in the register (e.g. garage, parking).
+A2e | Trigger if there is a discrepancy between the contract plan and the title plan boundaries.
+A2f | Trigger if the property address differs between the contract and the title register.
+A3  | Trigger if the title register contains any adverse entries that have not been explained.
+A4  | Trigger if any entries on the title register are not referred to in the contract.
+A5  | Trigger if there are overriding interests that have not been disclosed.
+A6a | Trigger if the register refers to a document and a copy has not been supplied.
+A6b | Trigger if the documents supplied appear to be incomplete or illegible.
+A7  | Trigger if the title register shows a restriction that will not be complied with on completion.
+A8  | Trigger if there are any cautions, inhibitions or notices on the title that have not been explained.
+A9  | Trigger if the seller is not the registered proprietor and no explanation has been given.
+B1  | Trigger if any search results disclose matters that require further enquiry or explanation.
+B2  | Trigger if any required searches (local, drainage, environmental) have not been provided.
+B3  | Trigger if search results have expired or are approaching expiry.
+C1  | Trigger if the TA13 Completion Information Form has not been included in the contract pack.
+C2a | Trigger if the seller refuses to adopt the Code for Completion by Post (paragraph 3.2 of TA13).
+C2b | Trigger if the seller has agreed to adopt the Code for Completion by Post but not in full.
+C2c | Trigger if the charges listed in paragraph 5.1 of the TA13 do not correspond with the Charges Register.
+C2d | Trigger if the seller's undertaking to redeem charges is limited in scope rather than unequivocal.
+C2e | Trigger if there are financial entries against the property that will not be removed by DS1 on completion.
+D1  | Trigger if the contract has not been signed by the seller or their authorised representative.
+D2  | Trigger if the contract is undated or the date appears to be incorrect.
+D3  | Trigger if the purchase price in the contract does not match the agreed price.
+D4  | Trigger if the deposit amount in the contract is incorrect or missing.
+D5  | Trigger if the completion date is missing from the contract or has already passed.
+D6a | Trigger if the property description in the contract does not accurately describe the property being purchased.
+D6b | Trigger if the title number in the contract does not match the official copies.
+D6c | Trigger if the seller's name in the contract does not match the registered proprietor.
+D7  | Trigger if the contract conditions differ materially from the Standard Conditions of Sale and no explanation is given.
+D8  | Trigger if there are special conditions in the contract that are unusual, onerous, or have not been explained to the client.
+D9  | Trigger if the chattels or fixtures and fittings included in the sale are not clearly defined in the contract.
+D10 | Trigger if the title guarantee given in the contract is less than full title guarantee without explanation.
+D11 | Trigger if the contract does not address how VAT will be treated on the purchase price.
+E1  | Trigger if the Property Information Form (TA6) has not been included in the contract pack at all.
+E2  | Trigger if the seller has left one or more sections of the Property Information Form incomplete.
+E3  | Trigger if pages appear to be missing from the copy Property Information Form supplied.
+E4  | Trigger if the seller has not confirmed whether the form is based on original documents.
+E5  | Trigger if the seller refers to documents within the PIF but copies of those documents have not been supplied.
+E6  | Trigger if the seller has indicated a parking scheme operates but has not provided the permit details.
+E7  | Trigger if no EPC has been supplied and none is available via the online EPC register.
+E8  | Trigger if the EPC supplied has expired (EPCs are valid for 10 years).
+E9  | Trigger if there are occupiers at the property aged 17 or over who are not a party to the transaction and have not provided consent.
+E10 | Trigger if the property is tenanted and notice to vacate has not been confirmed or a copy tenancy agreement has not been provided.
+E11 | Trigger if the Property Information Form has not been correctly signed and dated by the seller.
+E12 | Trigger if the Property Information Form was completed more than 6 months ago.
+F1  | Trigger if building works have been carried out at the property and the seller has not provided planning permission and building regulations completion certificate.
+F2a | Trigger if alterations have been made that required listed building consent and it has not been provided.
+F2b | Trigger if alterations have been made in a conservation area without the required consent.
+F3  | Trigger if replacement windows or doors have been installed and no FENSA certificate or building regulations completion certificate has been provided.
+F3b | Trigger if a new boiler or central heating system has been installed and no Gas Safe certificate has been provided.
+F3c | Trigger if electrical works have been carried out and no Competent Persons Scheme certificate or building regulations completion certificate has been provided.
+F4  | Trigger if the property has cavity wall insulation and no guarantee or warranty has been provided, or if there are known structural or damp issues related to it.
+G1  | Trigger if the Fittings and Contents Form (TA10) has not been correctly signed and dated by the seller.
+G2  | Trigger if the Fittings and Contents Form was completed more than 6 months ago.
+G3a | Trigger if the seller has not completed all sections of the Fittings and Contents Form.
+G3b | Trigger if the seller has not completed all columns in Section 2 of the Fittings and Contents Form relating to the kitchen.
+G4  | Trigger if the seller has offered any items for sale separately and the price or details have not been agreed with the client.
+H1  | Trigger if the mortgage or charge listed on the title register has not been addressed in the contract pack or TA13.
+H2  | Trigger if a Help to Buy equity loan or other government scheme charge is registered and no redemption details have been provided.
+H3  | Trigger if the seller has indicated there is a second charge and no details or redemption figure have been supplied.
+J1  | Trigger if the property is leasehold and the freehold title has not been investigated.
+J2  | Trigger if there are chancel repair liability risks that have not been addressed by insurance or indemnity.
+J3  | Trigger if there is a flying freehold or other unusual structural arrangement that has not been disclosed or explained.
+K1  | Trigger if new build warranties (e.g. NHBC Buildmark) have not been provided for a new build or recently converted property.
+K2  | Trigger if the property was built within the last 10 years and no new build warranty or architect's certificate has been provided.
+K3  | Trigger if there are covenants in the title that are not addressed by restrictive covenant indemnity insurance.
+K4  | Trigger if there are outstanding disputes or complaints about the property that have not been fully resolved and documented.
+K5  | Trigger if there are any planning notices, enforcement notices, or local authority matters that have not been explained.
+"""
+
+
+# ── Document Classification ───────────────────────────────────────────────────
+# Provides context to Gemini about what kind of document it is reading.
+# Classification does NOT restrict which rules are checked — all rules are always evaluated.
 FORM_KEYWORDS = {
     "TA6":  ["property information form", "ta6", "seller's property information"],
     "TA10": ["fittings and contents", "ta10", "fixtures and fittings"],
     "TA13": ["completion information", "ta13", "code for completion", "undertaking"],
+    "CONTRACT": ["contract for sale", "standard conditions of sale", "the seller", "the buyer"],
+    "OCE": ["official copy", "title register", "hm land registry", "registered proprietor"],
 }
-
 
 def classify_document(full_text: str, filename: str) -> str:
     """
-    Identifies the form type from the OCR text and filename.
-    Returns one of: "TA6", "TA10", "TA13", or "UNKNOWN".
-    Checks filename first (fastest), then first 1000 chars of text.
+    Identifies the form type for context labelling only.
+    Does NOT control which rules are applied — all rules are always evaluated.
+    Returns e.g. "TA6", "TA10", "CONTRACT", "OCE", or "UNKNOWN".
     """
-    # Check filename first — most reliable signal
     fname_lower = filename.lower()
     for form_type, keywords in FORM_KEYWORDS.items():
         if any(kw in fname_lower for kw in keywords):
             return form_type
 
-    # Fall back to scanning the top of the document text
-    header_text = full_text[:1000].lower()
+    header_text = full_text[:1500].lower()
     for form_type, keywords in FORM_KEYWORDS.items():
         if any(kw in header_text for kw in keywords):
             return form_type
@@ -76,102 +166,55 @@ def classify_document(full_text: str, filename: str) -> str:
     return "UNKNOWN"
 
 
-def extract_form_fields(full_text: str, form_type: str) -> dict:
-    """
-    Sends the OCR text of a form to Gemini and asks it to return a structured
-    JSON object containing:
-      - The state of every checkbox question relevant to our Rules Engine
-      - Any free-text detail notes the seller has written in answer boxes
+# ── Core Evaluation Function ──────────────────────────────────────────────────
 
-    The prompt is form-specific so Gemini knows exactly what to look for.
-    Returns a dict of field_key → value. Example:
+def evaluate_document_against_rules(full_text: str, form_type: str, filename: str) -> list:
+    """
+    Sends the full document text AND the entire GLOBAL_RULE_POOL to Gemini in a
+    single prompt. Gemini evaluates the document holistically and identifies which
+    rules from the pool are triggered by what it finds in the document.
+
+    No rules are pre-filtered by form type — Gemini sees ALL rules and picks the
+    ones that apply. This means if a TA6 also has contract information, the
+    CONTRACT rules will be evaluated too.
+
+    Returns a list of triggered findings:
+    [
       {
-        "signed_and_dated": true,
-        "form_date": "12 March 2024",
-        "all_sections_completed": true,
-        "building_works_carried_out": true,
-        "building_works_details": "Extension built in 2019, no planning permission obtained.",
-        "windows_replaced": false,
-        "epc_supplied": true,
-        "epc_expiry_date": "2026",
-        ...
-      }
-    If extraction fails, returns an empty dict and we fallback gracefully.
+        "enquiry_code": "E11",
+        "reason": "The Property Information Form has not been signed — the signature box on page 3 is blank.",
+        "evidence": "Signature box on page 3 is empty."
+      },
+      ...
+    ]
     """
 
-    # Build a form-specific extraction prompt
-    if form_type == "TA6":
-        prompt = f"""You are reading an OCR-scanned TA6 Property Information Form.
-Your job is to extract FACTS ONLY from the form text. Do NOT guess or infer.
-Look for ticked checkboxes (Yes/No), dates, and any text written in "give details" boxes.
+    prompt = f"""You are a UK conveyancing solicitor conducting a formal title check.
 
-Return ONLY a valid JSON object (no markdown, no explanation) with these exact keys:
-{{
-  "signed_and_dated": true/false,
-  "form_date": "date string or null",
-  "all_sections_completed": true/false,
-  "missing_sections": "list any incomplete sections or null",
-  "all_pages_present": true/false,
-  "documents_referred_to_missing": true/false,
-  "missing_documents_details": "details or null",
-  "epc_supplied": true/false,
-  "epc_expired": true/false,
-  "epc_expiry_date": "date or null",
-  "occupiers_present": true/false,
-  "occupiers_names": "names or null",
-  "tenants_present": true/false,
-  "parking_permit_required": true/false,
-  "building_works_carried_out": true/false,
-  "building_works_details": "details including dates or null",
-  "windows_replaced": true/false,
-  "windows_year": "year or null",
-  "boiler_replaced": true/false,
-  "boiler_year": "year or null",
-  "electrical_works_done": true/false,
-  "electrical_works_year": "year or null",
-  "cavity_wall_insulation": true/false,
-  "alterations_requiring_consent": true/false,
-  "alterations_details": "details or null"
-}}
+You have been given:
+1. A scanned legal document (OCR text): {filename} — classified as: {form_type}
+2. A complete list of rules from your firm's Title Check Checklist
 
-FORM TEXT:
+Your task:
+- Read through the document carefully.
+- For each rule in the checklist, determine whether the document triggers that rule.
+- A rule is triggered when the document shows a problem, missing item, or condition that matches the rule description.
+- Do NOT trigger a rule if the document shows the condition is satisfied.
+- Do NOT trigger rules that are clearly not relevant to this type of document.
+
+IMPORTANT: Return ONLY a valid JSON array (no markdown, no explanation).
+Each triggered rule must be an object with exactly these three keys:
+- "enquiry_code": the code string from the rule (e.g. "E11")
+- "reason": a single sentence explaining why this specific rule was triggered, referencing what you saw in the document
+- "evidence": a short quote or specific detail from the document that supports the trigger
+
+If NO rules are triggered, return an empty array: []
+
+=== CHECKLIST RULES ===
+{GLOBAL_RULE_POOL}
+
+=== DOCUMENT TEXT ===
 {full_text}"""
-
-    elif form_type == "TA10":
-        prompt = f"""You are reading an OCR-scanned TA10 Fittings and Contents Form.
-Your job is to extract FACTS ONLY. Return ONLY a valid JSON object (no markdown, no explanation):
-{{
-  "signed_and_dated": true/false,
-  "form_date": "date string or null",
-  "all_sections_completed": true/false,
-  "kitchen_section_complete": true/false,
-  "items_offered_for_sale": true/false,
-  "items_for_sale_details": "details or null"
-}}
-
-FORM TEXT:
-{full_text}"""
-
-    elif form_type == "TA13":
-        prompt = f"""You are reading an OCR-scanned TA13 Completion Information and Undertakings form.
-Your job is to extract FACTS ONLY. Return ONLY a valid JSON object (no markdown, no explanation):
-{{
-  "code_for_completion_by_post_adopted": true/false,
-  "code_adopted_in_full": true/false,
-  "charges_details_provided": true/false,
-  "charges_match_register": true/false,
-  "charges_details": "details of charges listed or null",
-  "undertaking_unequivocal": true/false,
-  "financial_entries_present": true/false,
-  "financial_entries_details": "details or null"
-}}
-
-FORM TEXT:
-{full_text}"""
-
-    else:
-        # For unknown form types, return empty — nothing to check
-        return {}
 
     try:
         response = gemini_model.generate_content(prompt)
@@ -182,225 +225,37 @@ FORM TEXT:
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
 
-        fields = json.loads(raw)
-        return fields
+        triggered = json.loads(raw)
+
+        # Validate structure — ensure we have a list of dicts with required keys
+        validated = []
+        for item in triggered:
+            if isinstance(item, dict) and "enquiry_code" in item:
+                validated.append({
+                    "enquiry_code": str(item.get("enquiry_code", "")).strip(),
+                    "reason":       str(item.get("reason", "")).strip(),
+                    "evidence":     str(item.get("evidence", "")).strip()
+                })
+
+        print(f"[TitleCheck] Gemini triggered {len(validated)} rules from global pool")
+        return validated
 
     except json.JSONDecodeError as e:
-        print(f"[TitleCheck] JSON parse error from Gemini: {e}")
-        print(f"[TitleCheck] Raw response was: {raw[:300]}")
-        return {}
+        print(f"[TitleCheck] JSON parse error: {e}")
+        print(f"[TitleCheck] Raw Gemini output (first 500 chars): {raw[:500]}")
+        return []
     except Exception as e:
-        print(f"[TitleCheck] Gemini extraction failed: {e}")
-        return {}
+        print(f"[TitleCheck] evaluate_document_against_rules failed: {e}")
+        return []
 
 
-# ── Rules Engine ──────────────────────────────────────────────────────────────
-# This is a hardcoded IF/THEN engine based on your firm's Title Check Checklist.
-# The LLM never makes a decision here — only the extracted field values matter.
-# Each rule is: (condition_function, enquiry_code, reason_string)
-# The reason_string is shown to the solicitor in the Review Board UI.
-
-TA6_RULES = [
-    # E11 — PIF not signed and dated
-    (
-        lambda f: f.get("signed_and_dated") is False,
-        "E11",
-        "The Property Information Form has not been correctly signed and dated."
-    ),
-    # E12 — PIF over 6 months old (Gemini extracts the date; we check it here)
-    # Note: date comparison is handled by a helper, rule just triggers if flag set
-    (
-        lambda f: f.get("form_over_6_months") is True,
-        "E12",
-        "The Property Information Form was completed over 6 months ago."
-    ),
-    # E2 — Incomplete sections
-    (
-        lambda f: f.get("all_sections_completed") is False,
-        "E2",
-        lambda f: f"The seller has not completed the following sections: {f.get('missing_sections', 'unknown sections')}."
-    ),
-    # E3 — Missing pages
-    (
-        lambda f: f.get("all_pages_present") is False,
-        "E3",
-        "Pages appear to be missing from the copy Property Information Form supplied."
-    ),
-    # E5 — Documents referred to but not supplied
-    (
-        lambda f: f.get("documents_referred_to_missing") is True,
-        "E5",
-        lambda f: f"The seller refers to documents in the PIF that were not included. Details: {f.get('missing_documents_details', 'see form')}."
-    ),
-    # E7 — EPC not supplied
-    (
-        lambda f: f.get("epc_supplied") is False,
-        "E7",
-        "No EPC has been supplied and none is available via the online register."
-    ),
-    # E8 — EPC expired
-    (
-        lambda f: f.get("epc_supplied") is True and f.get("epc_expired") is True,
-        "E8",
-        lambda f: f"The EPC supplied has expired (expiry: {f.get('epc_expiry_date', 'unknown')})."
-    ),
-    # E6 — Parking permit required but no details given
-    (
-        lambda f: f.get("parking_permit_required") is True,
-        "E6",
-        "The seller has indicated a parking permit is required but not provided details."
-    ),
-    # E9 — Occupiers present who need to consent
-    (
-        lambda f: f.get("occupiers_present") is True,
-        "E9",
-        lambda f: f"There are occupiers at the property ({f.get('occupiers_names', 'names not specified')}) who will need to confirm vacant possession."
-    ),
-    # E10 — Tenants who need notice to vacate
-    (
-        lambda f: f.get("tenants_present") is True,
-        "E10",
-        "The property appears to be tenanted. Notice to vacate must be confirmed before exchange."
-    ),
-    # F1 — Building works carried out
-    (
-        lambda f: f.get("building_works_carried_out") is True,
-        "F1",
-        lambda f: f"Building works have been carried out: {f.get('building_works_details', 'see form')}. Planning permission and building regulations must be provided."
-    ),
-    # F3 — Windows replaced, no FENSA certificate
-    (
-        lambda f: f.get("windows_replaced") is True,
-        "F3",
-        lambda f: f"Replacement windows/doors installed in {f.get('windows_year', 'unknown year')}. FENSA certificate required."
-    ),
-    # F3b — Boiler replaced, no Gas Safe certificate
-    (
-        lambda f: f.get("boiler_replaced") is True,
-        "F3b",
-        lambda f: f"New boiler/central heating installed in {f.get('boiler_year', 'unknown year')}. Gas Safe certificate required."
-    ),
-    # F3c — Electrical works done, no certificate
-    (
-        lambda f: f.get("electrical_works_done") is True,
-        "F3c",
-        lambda f: f"Electrical works carried out in {f.get('electrical_works_year', 'unknown year')}. Competent Persons Scheme certificate required."
-    ),
-    # F4 — Cavity wall insulation
-    (
-        lambda f: f.get("cavity_wall_insulation") is True,
-        "F4",
-        "Property has cavity wall insulation. Must confirm no structural/damp issues and no ongoing claim."
-    ),
-]
-
-TA10_RULES = [
-    # G1 — FCF not signed and dated
-    (
-        lambda f: f.get("signed_and_dated") is False,
-        "G1",
-        "The Fittings and Contents Form has not been correctly signed and dated."
-    ),
-    # G2 — FCF over 6 months old
-    (
-        lambda f: f.get("form_over_6_months") is True,
-        "G2",
-        "The Fittings and Contents Form was completed over 6 months ago."
-    ),
-    # G3a — Incomplete sections
-    (
-        lambda f: f.get("all_sections_completed") is False,
-        "G3a",
-        "The seller has not completed all sections of the Fittings and Contents Form."
-    ),
-    # G3b — Kitchen section columns incomplete
-    (
-        lambda f: f.get("kitchen_section_complete") is False,
-        "G3b",
-        "The seller has not completed all columns in Section 2 of the FCF relating to the kitchen."
-    ),
-    # G4 — Items offered for sale
-    (
-        lambda f: f.get("items_offered_for_sale") is True,
-        "G4",
-        lambda f: f"The seller has offered items for sale: {f.get('items_for_sale_details', 'see form')}. Client instructions required."
-    ),
-]
-
-TA13_RULES = [
-    # C2a — Not prepared to adopt Code for Completion by Post
-    (
-        lambda f: f.get("code_for_completion_by_post_adopted") is False,
-        "C2a",
-        "The seller is not prepared to adopt the Code for Completion by Post."
-    ),
-    # C2b — Not adopted in full
-    (
-        lambda f: f.get("code_for_completion_by_post_adopted") is True and f.get("code_adopted_in_full") is False,
-        "C2b",
-        "The seller has not agreed to adopt the Code for Completion by Post in full."
-    ),
-    # C2c — Charges mismatch
-    (
-        lambda f: f.get("charges_details_provided") is True and f.get("charges_match_register") is False,
-        "C2c",
-        lambda f: f"The charge(s) listed in TA13 paragraph 5.1 do not correspond with the Charges Register. Details: {f.get('charges_details', 'see form')}."
-    ),
-    # C2d — Undertaking not unequivocal
-    (
-        lambda f: f.get("undertaking_unequivocal") is False,
-        "C2d",
-        "The undertaking to redeem charges is limited in scope. An unequivocal undertaking is required."
-    ),
-    # C2e — Financial entries without DS1
-    (
-        lambda f: f.get("financial_entries_present") is True,
-        "C2e",
-        lambda f: f"Financial entries noted against the property that will not be removed by DS1: {f.get('financial_entries_details', 'see form')}."
-    ),
-]
-
-# Map each form type to its rule set
-RULES_MAP = {
-    "TA6":  TA6_RULES,
-    "TA10": TA10_RULES,
-    "TA13": TA13_RULES,
-}
-
-
-def apply_rules_engine(fields: dict, form_type: str) -> list:
-    """
-    Runs the hardcoded Rules Engine against the extracted form fields.
-    Returns a list of triggered findings, each containing:
-      - enquiry_code: the code from the Format Library (e.g. "E11")
-      - reason: a human-readable explanation of why the rule fired
-    No LLM involved — pure Python IF/THEN logic.
-    """
-    rules = RULES_MAP.get(form_type, [])
-    triggered = []
-
-    for condition, code, reason in rules:
-        try:
-            if condition(fields):
-                # reason can be a string or a callable (lambda f: ...) for dynamic messages
-                resolved_reason = reason(fields) if callable(reason) else reason
-                triggered.append({
-                    "enquiry_code": code,
-                    "reason": resolved_reason
-                })
-        except Exception as e:
-            # Never crash on a bad rule — just skip and log
-            print(f"[TitleCheck] Rule for {code} threw: {e}")
-
-    return triggered
-
+# ── Template Fetching ─────────────────────────────────────────────────────────
 
 def fetch_enquiry_template(code: str) -> dict:
     """
-    Fetches the enquiry text and metadata for a given code directly from ChromaDB.
-    Uses get() with a known ID rather than a vector search — we know exactly which
-    document we want, so this is deterministic and instantaneous.
-    Returns {"code", "topic", "text"} or a fallback if not found.
+    Fetches the enquiry draft text for a given code directly from ChromaDB.
+    Uses get() with the known ID (e.g. "enquiry_E11") — deterministic, no vector search.
+    Returns {"code", "topic", "text"} or a safe fallback if the code is not in the library.
     """
     try:
         result = format_collection.get(
@@ -411,69 +266,76 @@ def fetch_enquiry_template(code: str) -> dict:
             meta = result["metadatas"][0]
             text = result["documents"][0]
             return {
-                "code": meta.get("code", code),
-                "topic": meta.get("topic", ""),
-                "text": text
+                "code":  meta.get("code", code),
+                "topic": meta.get("topic", f"Enquiry {code}"),
+                "text":  text
             }
     except Exception as e:
         print(f"[TitleCheck] ChromaDB fetch failed for {code}: {e}")
 
-    # Fallback if template is not found in ChromaDB
+    # Fallback — shown to solicitor with a manual drafting prompt
     return {
-        "code": code,
+        "code":  code,
         "topic": f"Enquiry {code}",
-        "text": f"[Template for {code} not found in format library. Please draft manually.]"
+        "text":  f"[Template for {code} not found in format library. Please draft this enquiry manually.]"
     }
 
 
-def personalise_draft(template_text: str, reason: str, fields: dict, form_type: str) -> str:
+# ── Draft Personalisation ─────────────────────────────────────────────────────
+
+def personalise_draft(template_text: str, reason: str, evidence: str) -> str:
     """
-    Uses Gemini to weave seller-specific details (from the extracted fields and reason)
-    into the generic enquiry template text.
-    This is the ONLY place the LLM is used for drafting — the decision to raise the
-    enquiry has already been made by the rules engine.
-    Returns the personalised draft string.
+    Uses Gemini to fill any bracketed placeholders in the enquiry template
+    using the specific details observed in the document.
+
+    Only calls Gemini if the template actually has placeholders — skips the
+    API call entirely for self-contained templates, saving cost and latency.
+
+    Returns the completed enquiry text ready for the solicitor to review.
     """
-    # Only use Gemini if the template has placeholders that need filling
     has_placeholders = any(
         marker in template_text
-        for marker in ["(insert", "[PLEASE COMPLETE", "XXX", "??", "(name", "(date"]
+        for marker in ["(insert", "[PLEASE COMPLETE", "XXX", "??", "(name", "(date", "(details"]
     )
 
     if not has_placeholders:
-        # Template is already self-contained — no Gemini call needed
+        # Template is self-contained — no personalisation needed
         return template_text
 
-    prompt = f"""You are a UK conveyancing solicitor drafting a formal enquiry.
-Here is the standard enquiry template:
+    prompt = f"""You are a UK conveyancing solicitor completing a formal enquiry letter.
+
+Standard enquiry template:
 ---
 {template_text}
 ---
-Here is the context about why this enquiry is being raised:
+
+Why this enquiry is being raised:
 {reason}
 
-Here are additional facts extracted from the form:
-{json.dumps(fields, indent=2)}
+Specific evidence from the document:
+{evidence}
 
-TASK: Fill in any bracketed placeholders like (insert name), (year), (details) etc.
-using ONLY the facts provided above. 
-If a specific detail is not available in the facts above, write [PLEASE COMPLETE] in its place.
-Return ONLY the completed enquiry text. Do not add any preamble or explanation.
-Keep the formal legal tone exactly as written in the template."""
+TASK: Fill in any bracketed placeholders such as (insert name), (date), (details), etc.
+Use ONLY the reason and evidence provided above.
+If a specific detail is not available, write [PLEASE COMPLETE] in its place.
+Return ONLY the completed enquiry text. No preamble, no explanation.
+Maintain the formal legal tone of the template exactly."""
 
     try:
         response = gemini_model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
         print(f"[TitleCheck] Personalisation failed: {e}")
-        return template_text  # Return raw template if Gemini fails
+        return template_text  # Return raw template as safe fallback
 
+
+# ── Text Reconstruction ───────────────────────────────────────────────────────
 
 def get_all_chunks_text(title_number: str, filename: str) -> str:
     """
-    Fetches all stored ChromaDB chunks for a specific document and joins them
-    into one full-text string. Used to reconstruct the full document text for
-    Gemini to read (since we chunk on ingest but need full text for form extraction).
+    Fetches all ChromaDB chunks for a specific document and reconstructs the
+    full document text in reading order. We chunk on ingest but need full text
+    for the Gemini evaluation step.
     """
     results = case_collection.get(
         where={
@@ -488,91 +350,87 @@ def get_all_chunks_text(title_number: str, filename: str) -> str:
     if not results["ids"]:
         return ""
 
-    # Sort chunks back into reading order before joining
+    # Sort by chunk_index to restore reading order before joining
     paired = list(zip(results["documents"], results["metadatas"]))
     paired.sort(key=lambda x: x[1].get("chunk_index", 0))
     return "\n\n".join(doc for doc, _ in paired)
 
 
+# ── Main Entry Point ──────────────────────────────────────────────────────────
+
 def run_title_check(filename: str, title_number: str) -> dict:
     """
-    Main entry point — orchestrates the full pipeline for one document:
-      1. Reconstruct full text from ChromaDB chunks
-      2. Classify the document type
-      3. Extract form fields using Gemini
-      4. Run the hardcoded Rules Engine
-      5. Fetch enquiry templates from ChromaDB format_library
-      6. Personalise each draft using Gemini where needed
-      7. Return structured findings for the frontend Review Board
+    Orchestrates the full Title Check pipeline for one document.
+
+    Steps:
+      1. Reconstruct full document text from ChromaDB chunks
+      2. Classify document type (context only — does not restrict rules evaluated)
+      3. Send full text + GLOBAL_RULE_POOL to Gemini — Gemini identifies triggered rules
+      4. For each triggered rule: fetch template from ChromaDB + personalise with Gemini
+      5. Return structured findings for the frontend Review Board
 
     Returns:
     {
       "form_type": "TA6",
       "filename": "ta6.pdf",
-      "fields": { ...extracted checkbox states... },
       "findings": [
         {
           "enquiry_code": "E11",
-          "topic": "Property Information Form not signed and dated",
-          "reason": "The Property Information Form has not been...",
-          "draft": "We note that the Property Information Form has...",
-          "status": "pending"   ← frontend sets this to "approved"/"edited"/"discarded"
+          "topic": "Property Information Form — not signed and dated",
+          "reason": "The form has not been signed — the signature box is blank.",
+          "evidence": "Signature box on page 3 is empty.",
+          "draft": "We note that the Property Information Form has not been...",
+          "status": "pending"
         },
         ...
       ]
     }
     """
-    print(f"[TitleCheck] Starting check for {filename} in case {title_number}")
+    print(f"[TitleCheck] Starting check for '{filename}' in case {title_number}")
 
-    # Step 1: Reconstruct full document text from chunks
+    # Step 1: Reconstruct full text from ChromaDB chunks
     full_text = get_all_chunks_text(title_number, filename)
     if not full_text:
         return {
-            "error": f"No text found in ChromaDB for '{filename}'. "
-                     f"Please ensure the document has been uploaded and processed."
+            "error": (
+                f"No text found in ChromaDB for '{filename}'. "
+                f"Please ensure the document has been uploaded and processed correctly."
+            )
         }
 
-    # Step 2: Classify document type
+    # Step 2: Classify for context labelling only
     form_type = classify_document(full_text, filename)
-    print(f"[TitleCheck] Classified as: {form_type}")
+    print(f"[TitleCheck] Document classified as: {form_type}")
 
-    if form_type == "UNKNOWN":
-        return {
-            "error": f"Could not identify document type for '{filename}'. "
-                     f"Currently supported: TA6, TA10, TA13."
-        }
+    # Step 3: Gemini evaluates document against the full GLOBAL_RULE_POOL
+    triggered = evaluate_document_against_rules(full_text, form_type, filename)
 
-    # Step 3: Extract form fields using Gemini
-    fields = extract_form_fields(full_text, form_type)
-    print(f"[TitleCheck] Extracted {len(fields)} fields from Gemini")
-
-    # Step 4: Run the Rules Engine — no LLM here, pure IF/THEN
-    triggered = apply_rules_engine(fields, form_type)
-    print(f"[TitleCheck] Rules engine triggered {len(triggered)} findings")
-
-    # Step 5 + 6: Fetch templates and personalise each draft
+    # Step 4 + 5: Fetch templates and personalise each draft
     findings = []
     for item in triggered:
-        code   = item["enquiry_code"]
-        reason = item["reason"]
+        code     = item["enquiry_code"]
+        reason   = item["reason"]
+        evidence = item["evidence"]
 
-        # Fetch raw template from ChromaDB
+        # Fetch enquiry template from ChromaDB format_library by exact ID
         template = fetch_enquiry_template(code)
 
-        # Personalise the draft with Gemini where placeholders exist
-        draft = personalise_draft(template["text"], reason, fields, form_type)
+        # Personalise with Gemini only if template has placeholders
+        draft = personalise_draft(template["text"], reason, evidence)
 
         findings.append({
             "enquiry_code": code,
             "topic":        template["topic"],
             "reason":       reason,
+            "evidence":     evidence,   # shown in the Review Board as the "Why triggered" detail
             "draft":        draft,
-            "status":       "pending"  # frontend changes this to "approved"/"edited"/"discarded"
+            "status":       "pending"   # frontend sets to "approved" / "edited" / "discarded"
         })
 
+    print(f"[TitleCheck] Pipeline complete. {len(findings)} findings returned.")
+
     return {
-        "form_type":  form_type,
-        "filename":   filename,
-        "fields":     fields,     # returned so frontend can show evidence tooltips
-        "findings":   findings
+        "form_type": form_type,
+        "filename":  filename,
+        "findings":  findings
     }

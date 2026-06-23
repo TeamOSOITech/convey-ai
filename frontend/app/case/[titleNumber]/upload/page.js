@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 
 // All document types used in UK conveyancing
-const DOC_TYPES = ['LEASE', 'OCE', 'TA6', 'TA7', 'TA10', 'TR1', 'EPC', 'CONTRACT', 'OTHER']
+const DOC_TYPES = ['LEASE', 'OCE', 'TA6', 'TA7', 'TA10', 'TR1', 'TA13' , 'EPC', 'CONTRACT', 'OTHER']
 
 export default function UploadPage() {
   const { titleNumber } = useParams()  // gets title number from URL

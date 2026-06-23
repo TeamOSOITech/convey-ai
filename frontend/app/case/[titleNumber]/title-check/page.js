@@ -480,10 +480,16 @@ function FindingCard({ index, finding, editedDraft, onApprove, onDiscard, onEdit
         {statusBadge[finding.status]}
       </div>
 
-      {/* Reason — why this rule was triggered */}
+      {/* Reason + Evidence — why this rule was triggered */}
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 mb-3">
         <p className="text-xs text-amber-800 font-medium mb-0.5">📌 Why triggered:</p>
         <p className="text-xs text-amber-700">{finding.reason}</p>
+        {finding.evidence && (
+          <>
+            <p className="text-xs text-amber-800 font-medium mt-2 mb-0.5">🔍 Evidence in document:</p>
+            <p className="text-xs text-amber-600 italic">"{finding.evidence}"</p>
+          </>
+        )}
       </div>
 
       {/* Draft text — view or edit mode */}
