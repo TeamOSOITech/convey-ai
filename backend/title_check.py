@@ -28,34 +28,55 @@ import json
 import fitz                          # PyMuPDF — converts PDF pages to images
 from PIL import Image
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
 from dotenv import load_dotenv
 from embeddings import case_collection, format_collection
 
 load_dotenv()
 
-# ── Gemini Setup ──────────────────────────────────────────────────────────────
+# ── Gemini Setup & Fallback Mechanism ─────────────────────────────────────────
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
     raise ValueError("CRITICAL ERROR: GOOGLE_API_KEY missing from environment.")
 
 genai.configure(api_key=api_key.strip())
 
-try:
-    available_models = [
-        m.name for m in genai.list_models()
-        if 'generateContent' in m.supported_generation_methods
-    ]
-    # Use Flash-Lite — sufficient for form analysis; keeps cost low
-    model_name = next(
-        (m for m in available_models if '3.1-flash-lite' in m),
-        'gemini-3.1-flash-lite'
-    )
-    print(f"[TitleCheck] Using model: {model_name}")
-except Exception as e:
-    print(f"[TitleCheck] Model list failed, falling back. Error: {e}")
-    model_name = 'gemini-3.1-flash-lite'
+# The fallback order requested by the user
+FALLBACK_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-3.0-flash",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash" # Safe ultimate fallback just in case the 3.x models are not yet available in the SDK
+]
 
-gemini_model = genai.GenerativeModel(model_name)
+def generate_with_fallback(contents) -> str:
+    """
+    Attempts to generate content using the preferred model. If a rate limit or 
+    quota error occurs, it falls back to the next model in the list.
+    """
+    last_error = None
+    for model_name in FALLBACK_MODELS:
+        try:
+            print(f"[TitleCheck] Attempting generation with {model_name}...")
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(contents)
+            print(f"[TitleCheck] Success with {model_name}.")
+            return response.text
+        except ResourceExhausted as e:
+            print(f"[TitleCheck] Rate limit/quota exceeded for {model_name}. Falling back...")
+            last_error = e
+        except GoogleAPIError as e:
+            print(f"[TitleCheck] API error with {model_name}: {e}. Falling back...")
+            last_error = e
+        except Exception as e:
+            # Catch all other errors (like invalid model name if 3.5 doesn't exist yet)
+            print(f"[TitleCheck] Unexpected error with {model_name}: {e}. Falling back...")
+            last_error = e
+            
+    # If we get here, all models failed
+    print(f"[TitleCheck] CRITICAL: All models in fallback list failed. Last error: {last_error}")
+    raise Exception(f"All fallback models failed. Last error: {last_error}")
+
 
 # ── File Path Resolution ──────────────────────────────────────────────────────
 # Processed PDFs are stored at {DATA_DIR}/processed_pdfs/{filename}
@@ -313,12 +334,12 @@ Look carefully at each page for:
     prompt_text = _build_evaluation_prompt(form_type, filename, vision_instruction)
 
     try:
-        # Gemini multimodal: pass text prompt + all page images as a single content list
+        # Pass text prompt + all page images as a single content list
         content_parts = [prompt_text] + page_images
-        response = gemini_model.generate_content(content_parts)
-        return _parse_gemini_json(response.text, "vision")
+        response_text = generate_with_fallback(content_parts)
+        return _parse_gemini_json(response_text, "vision")
     except Exception as e:
-        print(f"[TitleCheck:vision] Gemini vision call failed: {e}")
+        print(f"[TitleCheck:vision] Evaluation failed after fallbacks: {e}")
         return []
 
 
@@ -338,10 +359,10 @@ Use contextual reasoning — consider form structure and what is ABSENT, not jus
     prompt = _build_evaluation_prompt(form_type, filename, text_instruction) + f"=== DOCUMENT TEXT ===\n{full_text}"
 
     try:
-        response = gemini_model.generate_content(prompt)
-        return _parse_gemini_json(response.text, "text-fallback")
+        response_text = generate_with_fallback(prompt)
+        return _parse_gemini_json(response_text, "text-fallback")
     except Exception as e:
-        print(f"[TitleCheck:text-fallback] Gemini call failed: {e}")
+        print(f"[TitleCheck:text-fallback] Evaluation failed after fallbacks: {e}")
         return []
 
 
@@ -418,10 +439,9 @@ Return ONLY the completed enquiry text. No preamble, no explanation.
 Maintain the formal legal tone of the template exactly."""
 
     try:
-        response = gemini_model.generate_content(prompt)
-        return response.text.strip()
+        return generate_with_fallback(prompt).strip()
     except Exception as e:
-        print(f"[TitleCheck] Personalisation failed: {e}")
+        print(f"[TitleCheck] Personalisation failed after fallbacks: {e}")
         return template_text  # Return raw template as safe fallback
 
 
