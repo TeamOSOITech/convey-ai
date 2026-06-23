@@ -65,9 +65,17 @@ DATA_DIR = os.getenv("DATA_DIR", "./data")
 def resolve_pdf_path(filename: str) -> str:
     """
     Returns the absolute path to the processed PDF file on disk.
+    Converts the original filename to the cleaned '_ocr.pdf' format used by the backend.
     Returns None if the file does not exist (triggers text fallback).
     """
-    path = os.path.join(DATA_DIR, "processed_pdfs", filename)
+    # Replicate the make_clean_filename logic from main.py to avoid circular imports
+    cleaned = filename.replace(" ", "_").replace(",", "").replace("(", "").replace(")", "")
+    if cleaned.endswith(".PDF"):
+        cleaned = cleaned[:-4] + "_ocr.pdf"
+    elif cleaned.endswith(".pdf"):
+        cleaned = cleaned[:-4] + "_ocr.pdf"
+
+    path = os.path.join(DATA_DIR, "processed_pdfs", cleaned)
     return path if os.path.exists(path) else None
 
 
