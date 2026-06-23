@@ -424,6 +424,33 @@ export default function CaseDashboard() {
     }
   }
 
+  const handleDeleteDocument = async (docId) => {
+    if (!confirm('Are you sure you want to delete this document? This will permanently remove it from the database and AI memory.')) return;
+    
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}/documents/${docId}`,
+        {
+          method: 'DELETE',
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        }
+      )
+      
+      const data = await res.json()
+      if (data.success) {
+        setCaseData(prev => ({
+          ...prev,
+          documents: prev.documents.filter(d => d.id !== docId)
+        }))
+      } else {
+        alert(`Failed to delete document: ${data.error || 'Unknown error'}`)
+      }
+    } catch (err) {
+      console.error('Failed to delete document:', err)
+      alert('An error occurred while deleting the document.')
+    }
+  }
+
   // Tool definitions — add new tools here as they are built
   // Each tool card navigates to its own sub-page under /case/[titleNumber]/
   const tools = [
@@ -640,7 +667,7 @@ export default function CaseDashboard() {
             </h3>
             <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
               {caseData.documents.map((doc) => (
-                <div key={doc.id} className="px-4 py-3 flex items-center justify-between">
+                <div key={doc.id} className="px-4 py-3 flex items-center justify-between group hover:bg-gray-50 transition-colors">
                   <div className="flex items-center gap-3">
                     {/* Doc type badge */}
                     <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded font-medium">
@@ -650,9 +677,20 @@ export default function CaseDashboard() {
                       {doc.filename}
                     </span>
                   </div>
-                  <span className="text-xs text-gray-400">
-                    {new Date(doc.uploaded_at).toLocaleDateString('en-GB')}
-                  </span>
+                  <div className="flex items-center gap-4">
+                    <span className="text-xs text-gray-400">
+                      {new Date(doc.uploaded_at).toLocaleDateString('en-GB')}
+                    </span>
+                    <button
+                      onClick={() => handleDeleteDocument(doc.id)}
+                      className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-red-50"
+                      title="Delete document"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
