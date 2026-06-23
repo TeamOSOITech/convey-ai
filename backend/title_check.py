@@ -189,24 +189,35 @@ def evaluate_document_against_rules(full_text: str, form_type: str, filename: st
     ]
     """
 
-    prompt = f"""You are a UK conveyancing solicitor conducting a formal title check.
+    prompt = f"""You are a UK conveyancing solicitor conducting a formal title check on an OCR-scanned document.
+
+IMPORTANT — OCR LIMITATIONS:
+This document was scanned and processed through OCR software. As a result:
+- Ticked checkboxes may appear as: ✓, ✗, X, ■, □, [X], [✓], filled characters, or completely garbled text
+- Unticked checkboxes may appear as empty boxes, blank spaces, or missing entirely
+- Handwritten signatures or dates may appear as garbled characters, smudged text, or blank areas
+- Some sections may be partially illegible or show OCR artefacts
+You must use CONTEXTUAL REASONING — look at surrounding text, form structure, and what is ABSENT
+rather than relying on clean tick mark symbols. For example, if a signature line shows no legible name
+or date, treat it as unsigned.
 
 You have been given:
 1. A scanned legal document (OCR text): {filename} — classified as: {form_type}
-2. A complete list of rules from your firm's Title Check Checklist
+2. A complete list of rules from the firm's Title Check Checklist
 
 Your task:
-- Read through the document carefully.
+- Read through the document carefully, accounting for OCR limitations.
 - For each rule in the checklist, determine whether the document triggers that rule.
 - A rule is triggered when the document shows a problem, missing item, or condition that matches the rule description.
-- Do NOT trigger a rule if the document shows the condition is satisfied.
-- Do NOT trigger rules that are clearly not relevant to this type of document.
+- Do NOT trigger a rule if the document clearly shows the condition is satisfied.
+- Do NOT trigger rules that are clearly irrelevant to this type of document.
+- When uncertain due to poor OCR quality, lean towards triggering the rule (the solicitor will verify).
 
 IMPORTANT: Return ONLY a valid JSON array (no markdown, no explanation).
 Each triggered rule must be an object with exactly these three keys:
 - "enquiry_code": the code string from the rule (e.g. "E11")
-- "reason": a single sentence explaining why this specific rule was triggered, referencing what you saw in the document
-- "evidence": a short quote or specific detail from the document that supports the trigger
+- "reason": a single sentence explaining why this specific rule was triggered, referencing what you saw (or didn't see) in the document
+- "evidence": a short quote or specific detail from the document that supports the trigger — if the trigger is based on an ABSENCE (e.g. blank signature field), describe what is missing
 
 If NO rules are triggered, return an empty array: []
 

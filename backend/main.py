@@ -704,3 +704,28 @@ async def title_check_route(req: TitleCheckRequest):
             status_code=500,
             content={"detail": f"Title check failed: {str(e)}"}
         )
+
+
+# ── Re-ingest formats endpoint ────────────────────────────────────────────────
+# Use this to rebuild the format_library ChromaDB collection on Railway
+# after adding new enquiry formats to ingest_formats.py.
+# Hit: POST /reingest-formats  (no body needed)
+@app.post("/reingest-formats")
+async def reingest_formats_route():
+    """
+    Wipes and rebuilds the format_library ChromaDB collection from ingest_formats.py.
+    Call this after deploying new enquiry formats to Railway so templates are available
+    for the Title Check and chatbot raise-enquiry features.
+    """
+    try:
+        from ingest_formats import ingest_all_enquiries
+        ingest_all_enquiries()
+        from embeddings import format_collection
+        count = format_collection.count()
+        return {"success": True, "message": f"Format library rebuilt. {count} enquiries now stored."}
+    except Exception as e:
+        print(f"[/reingest-formats] Error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Re-ingestion failed: {str(e)}"}
+        )
