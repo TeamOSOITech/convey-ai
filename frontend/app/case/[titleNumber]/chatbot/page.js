@@ -8,6 +8,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
+import { apiFetch } from '../../../../lib/api'
 import ReactMarkdown from 'react-markdown'
 
 export default function ChatbotPage() {
@@ -31,14 +32,10 @@ export default function ChatbotPage() {
 
   const fetchCase = async () => {
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}`,
-        { headers: { 'ngrok-skip-browser-warning': 'true' } }
-      )
+      const res = await apiFetch(`/cases/${titleNumber}`)
       const data = await res.json()
       if (data.success) {
         setCaseData(data)
-        // Auto-select first document so the PDF viewer shows something immediately
         if (data.documents.length > 0) setSelectedDoc(data.documents[0])
       }
     } catch (err) {
@@ -78,19 +75,15 @@ export default function ChatbotPage() {
     setPdfPage(null)  // reset while we look up the page
 
     try {
-      // Ask the backend to search chunk texts and return an estimated page number
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/find-page?` +
+      const res = await apiFetch(
+        `/find-page?` +
         `title_number=${encodeURIComponent(titleNumber)}` +
         `&filename=${encodeURIComponent(filename)}` +
-        `&query=${encodeURIComponent(ref)}`,
-        { headers: { 'ngrok-skip-browser-warning': 'true' } }
+        `&query=${encodeURIComponent(ref)}`
       )
       const data = await res.json()
-      // Set the page — the iframe key will remount to apply #page=N
       setPdfPage(data.page || 1)
     } catch {
-      // If the lookup fails, the doc is still open — just no page jump
       setPdfPage(1)
     }
   }
@@ -114,19 +107,14 @@ export default function ChatbotPage() {
       }))
 
       if (type === 'question') {
-        // General Q&A — searches case documents for relevant context
-        const res = await fetch(
-          `${process.env.NEXT_PUBLIC_BACKEND_URL}/chat?title_number=${titleNumber}`,
+        const res = await apiFetch(
+          `/chat?title_number=${encodeURIComponent(titleNumber)}`,
           {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'ngrok-skip-browser-warning': 'true'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               question: userMessage,
               history,
-              // Pass currently open document so backend can prioritise it
               current_document: selectedDoc ? selectedDoc.filename : null
             })
           }
@@ -136,20 +124,16 @@ export default function ChatbotPage() {
           role: 'assistant',
           type: 'answer',
           content: data.answer,
-          sources: data.sources || [],      // filenames LLM cited → source pills
-          citations: data.citations || []   // [{source, ref}] → InPage Ref pills
+          sources: data.sources || [],
+          citations: data.citations || []
         }])
 
       } else {
-        // Enquiry generation — matches format library + fills with case facts
-        const res = await fetch(
-          `${process.env.NEXT_PUBLIC_BACKEND_URL}/raise-enquiry?title_number=${titleNumber}`,
+        const res = await apiFetch(
+          `/raise-enquiry?title_number=${encodeURIComponent(titleNumber)}`,
           {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'ngrok-skip-browser-warning': 'true'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               issue: userMessage,
               history,
@@ -245,12 +229,9 @@ export default function ChatbotPage() {
                   onClick={async (e) => {
                     e.stopPropagation()
                     if (!confirm('Delete this document? This cannot be undone.')) return
-                    await fetch(
-                      `${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}/documents/${doc.id}`,
-                      {
-                        method: 'DELETE',
-                        headers: { 'ngrok-skip-browser-warning': 'true' }
-                      }
+                    await apiFetch(
+                      `/cases/${titleNumber}/documents/${doc.id}`,
+                      { method: 'DELETE' }
                     )
                     fetchCase()
                   }}

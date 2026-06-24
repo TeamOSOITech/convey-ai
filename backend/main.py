@@ -1,6 +1,6 @@
 # main.py — main backend server file
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -13,11 +13,9 @@ import os
 from pydantic import BaseModel
 from typing import List, Optional
 from zip_processor import extract_zip
-# Find this line near the top of main.py:
 from chatbot import ask_question, raise_enquiry
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-# Add this right below it:
 from title_report import generate_title_report
 from title_check import run_title_check
 
@@ -54,15 +52,53 @@ app.mount("/processed", StaticFiles(directory=f"{DATA_DIR}/processed_pdfs"), nam
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://.*\.vercel\.app",  # regex — matches ALL *.vercel.app URLs
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_origins=[
-        "http://localhost:3000",           # local development
-        "https://convey-ai-mauve.vercel.app",    # production Vercel URL
+        "http://localhost:3000",
+        "https://convey-ai-mauve.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── JWT Authentication ────────────────────────────────────────────────────────
+# Verifies the Supabase JWT attached by the frontend on every request.
+# The frontend sends: Authorization: Bearer <supabase_access_token>
+# We pass that token to Supabase's auth.get_user() which validates it server-side.
+# This ensures only logged-in users can access any data endpoints.
+
+from supabase import create_client as _create_supabase_client
+_supabase_auth = _create_supabase_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_KEY")
+)
+
+async def require_auth(authorization: str = Header(default=None)):
+    """
+    FastAPI dependency — call as Depends(require_auth) on any protected route.
+    Extracts the Bearer token from the Authorization header and validates it
+    against Supabase. Raises 401 if missing or invalid.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid Authorization header. Expected: Bearer <token>"
+        )
+    token = authorization[len("Bearer "):].strip()
+    try:
+        user_response = _supabase_auth.auth.get_user(token)
+        if not user_response or not user_response.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        return user_response.user
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Auth] Token verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+# Set to True locally for debug endpoints. Railway should NOT set this.
+DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
 
 def make_clean_filename(filename: str) -> str:
     """
@@ -153,7 +189,7 @@ def health():
     return {"status": "ok"}
 
 @app.post("/upload-zip")
-async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN"):
+async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN", _user=Depends(require_auth)):
     """
     Receives a contract pack ZIP
     Extracts all PDFs, OCRs each one, stores everything under the title number
@@ -235,7 +271,7 @@ async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN"
     }
 
 @app.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...), title_number: str = "UNKNOWN", doc_type: str = "OTHER"):
+async def upload_pdf(file: UploadFile = File(...), title_number: str = "UNKNOWN", doc_type: str = "OTHER", _user=Depends(require_auth)):
     """
     Full pipeline: PDF → OCR → chunk → embed → store in ChromaDB + Supabase
     """
@@ -295,7 +331,7 @@ class TitleReportRequest(BaseModel):
     selected_filenames: List[str]
 
 @app.post("/chat")
-async def chat(title_number: str, request: ChatRequest):
+async def chat(title_number: str, request: ChatRequest, _user=Depends(require_auth)):
     """General Q&A prioritizing the current document"""
     # Normalise title number to uppercase so ChromaDB where-filter matches stored metadata
     result = ask_question(
@@ -324,7 +360,7 @@ async def search_formats_route(query: str):
     }
 
 @app.post("/raise-enquiry")
-async def raise_enquiry_route(title_number: str, request: EnquiryRequest):
+async def raise_enquiry_route(title_number: str, request: EnquiryRequest, _user=Depends(require_auth)):
     """Raises enquiry with conversation memory, prioritizing current document"""
     # Normalise title number to uppercase so ChromaDB where-filter matches stored metadata
     result = raise_enquiry(
@@ -336,20 +372,20 @@ async def raise_enquiry_route(title_number: str, request: EnquiryRequest):
     return result
 
 @app.post("/cases")
-async def create_case_route(title_number: str):
+async def create_case_route(title_number: str, _user=Depends(require_auth)):
     """Creates a new case in Supabase"""
     # Normalise title number to uppercase for consistency across all storage layers
     result = create_case(title_number.upper())
     return result
 
 @app.get("/cases")
-async def get_all_cases_route():
+async def get_all_cases_route(_user=Depends(require_auth)):
     """Returns all cases for the dashboard"""
     result = get_all_cases()
     return result
 
 @app.get("/cases/{title_number}")
-async def get_case_route(title_number: str):
+async def get_case_route(title_number: str, _user=Depends(require_auth)):
     """Returns a specific case and all its documents"""
     # Normalise title number to uppercase so Supabase query matches stored data
     result = get_case(title_number.upper())
@@ -434,7 +470,7 @@ async def get_case_route(title_number: str):
 
 #     return {"success": True, "message": f"Document '{original_filename}' deleted completely"}
 @app.delete("/cases/{title_number}/documents/{document_id}")
-async def delete_document_route(title_number: str, document_id: str):
+async def delete_document_route(title_number: str, document_id: str, _user=Depends(require_auth)):
     """
     Deletes a document completely from Supabase, Disk, and ChromaDB.
     """
@@ -474,17 +510,18 @@ async def delete_document_route(title_number: str, document_id: str):
 @app.get("/debug-chunks/{title_number}")
 async def debug_chunks(title_number: str):
     """
-    Temporary debug route — shows what metadata keys/values are
-    stored in ChromaDB for a given case. Delete after debugging.
+    Debug route — gated behind DEV_MODE env var.
+    Set DEV_MODE=true locally in .env. Never set this on Railway.
     """
-    # Fetch up to 5 chunks for this case to inspect their metadata
+    if not DEV_MODE:
+        raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production")
     results = case_collection.get(
         where={"title_number": title_number.upper()},
         limit=5
     )
     return {
         "ids": results["ids"],
-        "metadatas": results["metadatas"]  # this shows all stored keys + values
+        "metadatas": results["metadatas"]
     }
 
 # @app.get("/debug-query/{title_number}")
@@ -526,9 +563,11 @@ async def debug_chunks(title_number: str):
 @app.get("/debug-query/{title_number}")
 async def debug_query(title_number: str, question: str, current_document: str = None):
     """
-    Temporary debug — shows exactly what chunks the chatbot would retrieve
-    for a given question and open document
+    Debug route — gated behind DEV_MODE env var.
+    Set DEV_MODE=true locally in .env. Never set this on Railway.
     """
+    if not DEV_MODE:
+        raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production")
     from embeddings import model
     
     query_embedding = model.encode([question]).tolist()
@@ -582,11 +621,12 @@ async def debug_query(title_number: str, question: str, current_document: str = 
     }
 @app.get("/debug-sources/{title_number}")
 async def debug_sources(title_number: str):
-    """Shows all unique document source names stored in ChromaDB for this case"""
+    """Debug route — gated behind DEV_MODE env var. Set DEV_MODE=true locally."""
+    if not DEV_MODE:
+        raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production")
     results = case_collection.get(
         where={"title_number": title_number.upper()}
     )
-    # Extract unique source values from all metadata
     sources = list(set(m["source"] for m in results["metadatas"]))
     return {"title_number": title_number.upper(), "sources": sources}
 
@@ -670,7 +710,7 @@ async def find_page(title_number: str, filename: str, query: str):
 # can display a proper error message instead.
  
 @app.post("/generate-title-report")
-async def generate_title_report_route(title_number: str, request: TitleReportRequest):
+async def generate_title_report_route(title_number: str, request: TitleReportRequest, _user=Depends(require_auth)):
     """
     Generates a structured Title Report for the selected documents.
     Always returns JSON — even on failure — so the frontend can show a real error.
@@ -717,7 +757,7 @@ class TitleCheckRequest(BaseModel):
     filename:     str   # exact filename as stored in ChromaDB
 
 @app.post("/title-check")
-async def title_check_route(req: TitleCheckRequest):
+async def title_check_route(req: TitleCheckRequest, _user=Depends(require_auth)):
     """
     Runs the Title Check pipeline on a single TA6/TA10/TA13 document.
     Returns a findings list that the frontend displays as the Review Board.

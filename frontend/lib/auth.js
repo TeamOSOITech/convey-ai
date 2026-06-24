@@ -38,3 +38,13 @@ export function useAuth() {
 
   return { user, loading }
 }
+
+/**
+ * getToken — returns the current Supabase JWT access token.
+ * Used by apiFetch() to attach Authorization headers to backend requests.
+ * Returns null if the user is not signed in (caller should handle redirect).
+ */
+export async function getToken() {
+  const { data: { session } } = await supabase.auth.getSession()
+  return session?.access_token ?? null
+}

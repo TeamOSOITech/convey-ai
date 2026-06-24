@@ -396,6 +396,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAuth } from '../../../lib/auth'
+import { apiFetch } from '../../../lib/api'
 
 export default function CaseDashboard() {
   const { titleNumber } = useParams()
@@ -411,10 +412,7 @@ export default function CaseDashboard() {
 
   const fetchCase = async () => {
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}`,
-        { headers: { 'ngrok-skip-browser-warning': 'true' } }
-      )
+      const res = await apiFetch(`/cases/${titleNumber}`)
       const data = await res.json()
       if (data.success) setCaseData(data)
     } catch (err) {
@@ -428,12 +426,9 @@ export default function CaseDashboard() {
     if (!confirm('Are you sure you want to delete this document? This will permanently remove it from the database and AI memory.')) return;
     
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}/documents/${docId}`,
-        {
-          method: 'DELETE',
-          headers: { 'ngrok-skip-browser-warning': 'true' }
-        }
+      const res = await apiFetch(
+        `/cases/${titleNumber}/documents/${docId}`,
+        { method: 'DELETE' }
       )
       
       const data = await res.json()

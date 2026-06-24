@@ -12,6 +12,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
+import { apiFetch } from '../../../../lib/api'
 import ReactMarkdown from 'react-markdown'
 
 // Document types this tool supports — shown as hints in the selection panel
@@ -50,10 +51,7 @@ export default function TitleCheckPage() {
 
   const fetchCase = async () => {
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}`,
-        { headers: { 'ngrok-skip-browser-warning': 'true' } }
-      )
+      const res = await apiFetch(`/cases/${titleNumber}`)
       const data = await res.json()
       if (data.success) setCaseData(data)
     } catch (err) {
@@ -76,20 +74,14 @@ export default function TitleCheckPage() {
     setFinalReport(null)
 
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/title-check`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'ngrok-skip-browser-warning': 'true'
-          },
-          body: JSON.stringify({
-            title_number: titleNumber,
-            filename: selectedDoc.filename
-          })
-        }
-      )
+      const res = await apiFetch('/title-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title_number: titleNumber,
+          filename: selectedDoc.filename
+        })
+      })
       const data = await res.json()
 
       // Backend returns {error: "..."} for classification failures

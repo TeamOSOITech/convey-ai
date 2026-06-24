@@ -1,20 +1,22 @@
 'use client'
 import { useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
+import { useAuth } from '../../../../lib/auth'
+import { apiFetch } from '../../../../lib/api'
 
 // All document types used in UK conveyancing
 const DOC_TYPES = ['LEASE', 'OCE', 'TA6', 'TA7', 'TA10', 'TR1', 'TA13' , 'EPC', 'CONTRACT', 'OTHER']
 
 export default function UploadPage() {
-  const { titleNumber } = useParams()  // gets title number from URL
-  const router = useRouter()           // used to navigate back after upload
+  const { titleNumber } = useParams()
+  const router = useRouter()
+  const { user, loading: authLoading } = useAuth()  // auth guard — redirects to /login if not signed in
 
-  // State variables — each one controls a piece of the UI
-  const [file, setFile] = useState(null)        // the selected PDF file
-  const [docType, setDocType] = useState('TA6') // selected document type
-  const [uploading, setUploading] = useState(false) // shows loading state
-  const [result, setResult] = useState(null)    // success response from backend
-  const [error, setError] = useState(null)      // error message if upload fails
+  const [file, setFile] = useState(null)
+  const [docType, setDocType] = useState('TA6')
+  const [uploading, setUploading] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState(null)
 
   const handleUpload = async () => {
     if (!file) return
@@ -22,33 +24,35 @@ export default function UploadPage() {
     setError(null)
     setResult(null)
 
-    // FormData is how we send a file to the backend
-    // It's like a form submission with file attached
     const formData = new FormData()
     formData.append('file', file)
 
     try {
-      // Send file + title number + doc type to backend
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/upload-pdf?title_number=${titleNumber}&doc_type=${docType}`,
-        { method: 'POST', body: formData , 
-          headers: {
-            'ngrok-skip-browser-warning': 'true'
-          }
-        }
+      const res = await apiFetch(
+        `/upload-pdf?title_number=${encodeURIComponent(titleNumber)}&doc_type=${encodeURIComponent(docType)}`,
+        { method: 'POST', body: formData }
       )
       const data = await res.json()
 
       if (data.success) {
-        setResult(data)  // show success message
+        setResult(data)
       } else {
         setError(data.error || 'Upload failed')
       }
     } catch (err) {
       setError('Something went wrong. Please try again.')
     } finally {
-      setUploading(false)  // always stop loading whether success or error
+      setUploading(false)
     }
+  }
+
+  // Show loading spinner while auth is being checked
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <p className="text-gray-400 text-sm">Loading...</p>
+      </div>
+    )
   }
 
   return (

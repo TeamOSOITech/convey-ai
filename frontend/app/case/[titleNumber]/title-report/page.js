@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
+import { apiFetch } from '../../../../lib/api'
 import ReactMarkdown from 'react-markdown'
 
 // Human-readable labels for document types shown in the selection panel
@@ -44,10 +45,7 @@ export default function TitleReportPage() {
 
   const fetchCase = async () => {
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/cases/${titleNumber}`,
-        { headers: { 'ngrok-skip-browser-warning': 'true' } }
-      )
+      const res = await apiFetch(`/cases/${titleNumber}`)
       const data = await res.json()
       if (data.success) setCaseData(data)
     } catch (err) {
@@ -95,15 +93,11 @@ export default function TitleReportPage() {
       const filename = selectedFilenames[i];
 
       try {
-        const res = await fetch(
-          `${process.env.NEXT_PUBLIC_BACKEND_URL}/generate-title-report?title_number=${titleNumber}`,
+        const res = await apiFetch(
+          `/generate-title-report?title_number=${encodeURIComponent(titleNumber)}`,
           {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'ngrok-skip-browser-warning': 'true'
-            },
-            // Send ONLY ONE file to keep the request fast
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ selected_filenames: [filename] })
           }
         )

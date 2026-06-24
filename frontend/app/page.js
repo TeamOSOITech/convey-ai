@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '../lib/auth'
+import { apiFetch } from '../lib/api'
 
 export default function Dashboard() {
   const [cases, setCases] = useState([])
@@ -18,11 +19,7 @@ export default function Dashboard() {
 
   const fetchCases = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/cases`, {
-        headers: {
-          'ngrok-skip-browser-warning': 'true'
-        }
-      })
+      const res = await apiFetch('/cases')
       const data = await res.json()
       setCases(data.cases || [])
     } catch (err) {
@@ -32,9 +29,10 @@ export default function Dashboard() {
     }
   }
   
+  // Only fetch after auth resolves — prevents unauthenticated API calls
   useEffect(() => {
-    fetchCases()
-  }, [])
+    if (user) fetchCases()
+  }, [user])
 
   // Show loading while checking auth
   if (authLoading) {
@@ -71,15 +69,11 @@ export default function Dashboard() {
       if (zipFile) {
         // Path 1: User uploaded a ZIP - route to the heavy processor
         const formData = new FormData()
-        formData.append('file', zipFile) // Only append the file to the body
+        formData.append('file', zipFile)
 
-        // CRITICAL FIX: Pass the title_number in the URL query string here
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/upload-zip?title_number=${formattedTitle}`, {
+        const res = await apiFetch(`/upload-zip?title_number=${encodeURIComponent(formattedTitle)}`, {
           method: 'POST',
           body: formData,
-          headers: {
-            'ngrok-skip-browser-warning': 'true'
-          }
         })
         
         const data = await res.json()
@@ -87,11 +81,8 @@ export default function Dashboard() {
         
       } else {
         // Path 2: No ZIP uploaded - just create an empty case
-        const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/cases?title_number=${formattedTitle}`, {
+        const res = await apiFetch(`/cases?title_number=${encodeURIComponent(formattedTitle)}`, {
           method: 'POST',
-          headers: {
-            'ngrok-skip-browser-warning': 'true'
-          }
         })
         
         const data = await res.json()
