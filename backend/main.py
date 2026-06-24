@@ -68,11 +68,8 @@ app.add_middleware(
 # We pass that token to Supabase's auth.get_user() which validates it server-side.
 # This ensures only logged-in users can access any data endpoints.
 
-from supabase import create_client as _create_supabase_client
-_supabase_auth = _create_supabase_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_KEY")
-)
+import asyncio
+from database import supabase as _supabase_auth   # reuse the existing client — no duplicate connection
 
 async def require_auth(authorization: str = Header(default=None)):
     """
@@ -87,7 +84,9 @@ async def require_auth(authorization: str = Header(default=None)):
         )
     token = authorization[len("Bearer "):].strip()
     try:
-        user_response = _supabase_auth.auth.get_user(token)
+        # Run the synchronous Supabase call in a thread so it doesn't block
+        # FastAPI's async event loop under concurrent requests.
+        user_response = await asyncio.to_thread(_supabase_auth.auth.get_user, token)
         if not user_response or not user_response.user:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
         return user_response.user
