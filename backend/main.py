@@ -167,15 +167,14 @@ async def view_pdf(filename: str):
         headers={
             "Content-Disposition": f'inline; filename="{safe_filename}"',
             "Content-Type": "application/pdf",
-            # Allow ONLY our Vercel frontend to embed this PDF in an iframe.
-            # frame-ancestors is more precise than X-Frame-Options and supports
-            # multiple trusted origins. 'self' covers local dev (localhost:3000
-            # is handled by the wildcard). ALLOWALL was removed — it allowed
-            # any website to embed client legal documents.
+            # Allow our Vercel frontend (all subdomains, including preview URLs)
+            # and localhost on any port to embed this PDF in an iframe.
+            # *.vercel.app covers production + all branch/preview deployments.
             "Content-Security-Policy": (
                 "frame-ancestors 'self' "
-                "https://convey-ai-mauve.vercel.app "
-                "http://localhost:3000"
+                "https://*.vercel.app "
+                "http://localhost:* "
+                "https://localhost:*"
             ),
         }
     )
