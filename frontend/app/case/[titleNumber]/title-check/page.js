@@ -46,6 +46,11 @@ export default function TitleCheckPage() {
   // Final compiled report
   const [finalReport,  setFinalReport]  = useState(null)
 
+  // Manual enquiry addition state
+  const [manualCode, setManualCode] = useState('')
+  const [addingManual, setAddingManual] = useState(false)
+  const [manualError, setManualError] = useState(null)
+
   // ── Data Fetch ─────────────────────────────────────────────────────────────
   useEffect(() => { fetchCase() }, [titleNumber])
 
@@ -58,6 +63,36 @@ export default function TitleCheckPage() {
       console.error('Failed to fetch case:', err)
     } finally {
       setPageLoading(false)
+    }
+  }
+
+  const addManualEnquiry = async () => {
+    if (!manualCode.trim()) return
+    setAddingManual(true)
+    setManualError(null)
+    
+    try {
+      const res = await apiFetch(`/formats/${encodeURIComponent(manualCode.trim())}`)
+      const data = await res.json()
+      
+      if (!res.ok) {
+        throw new Error(data.detail || 'Format not found')
+      }
+      
+      const newFinding = {
+        enquiry_code: data.code,
+        topic: data.topic,
+        reason: "Manually added by user.",
+        draft: data.draft,
+        status: 'pending'
+      }
+      
+      setFindings(prev => [...prev, newFinding])
+      setManualCode('')
+    } catch (err) {
+      setManualError(err.message)
+    } finally {
+      setAddingManual(false)
     }
   }
 
@@ -94,7 +129,7 @@ export default function TitleCheckPage() {
       // Initialise each finding as 'pending' — user must action all of them
       setFindings(data.findings || [])
       setEvaluationMode(data.evaluation_mode || null)
-      setPhase(data.findings?.length > 0 ? 'review' : 'done_clean')
+      setPhase('review')
 
     } catch (err) {
       setRunError('Connection error. Please try again.')
@@ -326,7 +361,6 @@ export default function TitleCheckPage() {
               )}
             </span>
           )}
-              {phase === 'done_clean' && '✅ No issues found in this document.'}
               {phase === 'generate' && 'Final report ready.'}
             </p>
           </div>
@@ -355,47 +389,68 @@ export default function TitleCheckPage() {
           </div>
         )}
 
-        {/* ── Phase: Clean (no issues) ────────────────────────────────────── */}
-        {phase === 'done_clean' && (
-          <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center px-8">
-            <div className="text-5xl">🎉</div>
-            <p className="text-gray-700 font-semibold text-sm">No issues found!</p>
-            <p className="text-xs text-gray-400">
-              The Rules Engine did not trigger any enquiries for this document.
-            </p>
-          </div>
-        )}
-
         {/* ── Phase: Review Board ─────────────────────────────────────────── */}
         {phase === 'review' && (
           <div className="flex-1 flex flex-col overflow-hidden">
 
             {/* Findings list */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {findings.map((finding, index) => (
-                <FindingCard
-                  key={index}
-                  index={index}
-                  finding={finding}
-                  editedDraft={editedDrafts[index] ?? finding.draft}
-                  onApprove={() => setFindingStatus(index, 'approved')}
-                  onDiscard={() => setFindingStatus(index, 'discarded')}
-                  onEditChange={(text) => updateEditedDraft(index, text)}
-                  onJumpToPage={(page) => setPdfPage(page)}
-                />
-              ))}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
+              {findings.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+                  <div className="text-5xl">🎉</div>
+                  <p className="text-gray-700 font-semibold text-sm">No issues found by AI!</p>
+                  <p className="text-xs text-gray-400">
+                    You can generate a clean report, or manually add enquiries below.
+                  </p>
+                </div>
+              ) : (
+                findings.map((finding, index) => (
+                  <FindingCard
+                    key={index}
+                    index={index}
+                    finding={finding}
+                    editedDraft={editedDrafts[index] ?? finding.draft}
+                    onApprove={() => setFindingStatus(index, 'approved')}
+                    onDiscard={() => setFindingStatus(index, 'discarded')}
+                    onEditChange={(text) => updateEditedDraft(index, text)}
+                    onJumpToPage={(page) => setPdfPage(page)}
+                  />
+                ))
+              )}
             </div>
 
-            {/* Generate button — only enabled when all findings actioned */}
-            <div className="p-4 border-t border-gray-100">
-              {!allActioned && (
+            {/* Manual Enquiry Addition + Generate button */}
+            <div className="p-4 border-t border-gray-100 bg-white">
+              
+              <div className="mb-4">
+                 <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      placeholder="Enquiry Code (e.g. A1)" 
+                      value={manualCode}
+                      onChange={e => setManualCode(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && addManualEnquiry()}
+                      className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
+                    />
+                    <button 
+                      onClick={addManualEnquiry}
+                      disabled={addingManual || !manualCode.trim()}
+                      className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-sm font-medium px-4 rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      {addingManual ? 'Adding...' : 'Add Enquiry'}
+                    </button>
+                 </div>
+                 {manualError && <p className="text-xs text-red-500 mt-1.5">{manualError}</p>}
+              </div>
+
+              {!allActioned && findings.length > 0 && (
                 <p className="text-xs text-amber-600 text-center mb-2">
                   ⚠️ Please approve, edit, or discard all {pendingCount} remaining finding{pendingCount !== 1 ? 's' : ''} before generating.
                 </p>
               )}
               <button
                 onClick={generateReport}
-                disabled={!allActioned}
+                disabled={!allActioned && findings.length > 0}
                 className="w-full bg-gray-900 hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
               >
                 Generate Enquiry Report ({approvedCount} enquir{approvedCount !== 1 ? 'ies' : 'y'})

@@ -629,6 +629,26 @@ async def debug_sources(title_number: str):
     return {"title_number": title_number.upper(), "sources": sources}
 
 
+@app.get("/formats/{code}")
+async def get_format(code: str, _=Depends(require_auth)):
+    """Fetch an enquiry format by its code (e.g. A1, E7) for manual addition."""
+    from embeddings import format_collection
+    # Case-insensitive lookup isn't directly supported by ChromaDB exactly like this,
+    # but the codes are typically uppercase in the database (e.g., A1, F2a)
+    # We will try both exact match and uppercase match just in case.
+    results = format_collection.get(where={"code": code.upper()})
+    if not results["ids"]:
+        results = format_collection.get(where={"code": code})
+        if not results["ids"]:
+            raise HTTPException(status_code=404, detail=f"Enquiry code '{code}' not found")
+    
+    return {
+        "code": results["metadatas"][0]["code"],
+        "topic": results["metadatas"][0]["topic"],
+        "draft": results["documents"][0]
+    }
+
+
 @app.get("/find-page")
 async def find_page(title_number: str, filename: str, query: str):
     """
