@@ -477,6 +477,15 @@ export default function CaseDashboard() {
       color: 'orange'
     },
     {
+      id: 'extract',
+      title: 'Smart Extract',
+      description: 'Write custom extraction rules and the AI pulls any information you need from any combination of documents — dates, parties, financials, obligations and more.',
+      icon: '🔍',
+      path: `/case/${titleNumber}/extract`,
+      available: true,
+      color: 'purple'
+    },
+    {
       id: 'letters',
       title: 'Letter Generator',
       description: 'Generate standard conveyancing letters — Report on Title, Completion Letters, Client Care and more.',
@@ -549,6 +558,13 @@ export default function CaseDashboard() {
       icon: 'bg-orange-100',
       hover: 'hover:border-orange-400',
       badge: 'bg-orange-600'
+    },
+    purple: {
+      bg: 'bg-purple-50',
+      border: 'border-purple-200',
+      icon: 'bg-purple-100',
+      hover: 'hover:border-purple-400',
+      badge: 'bg-purple-600'
     }
   }
 
