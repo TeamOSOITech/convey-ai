@@ -725,24 +725,37 @@ DOCUMENT: {context}"""
         return "Unknown Date"
 
 def extract_legal_fields(full_text: str, filename: str) -> dict:
-    """Because Gemini has a 1M token window, we just send the whole document at once!"""
+    """Because Gemini has a 1M token window, we just send the whole document at once!
+    Also extracts the page number where each legal field begins."""
     prompt = f"""You are a UK conveyancing legal assistant reading: {filename}
 
-TASK: Extract the following four categories from the document below. 
-Format using markdown (**bold** for terms, > blockquotes for clauses).
+TASK: Extract the following four categories from the document below.
+For each category, identify the page number where that content begins (look for page numbers in headers, footers, or inline page markers in the text).
+Format content using markdown (**bold** for terms, > blockquotes for clauses).
 If a category is genuinely not in the document, write: *Not present in this document*
-WRITE ENOUGH text under each category that a lawyer can understand and act upon that information, no cruical information should be left behind.
+WRITE ENOUGH text under each category that a lawyer can understand and act upon that information, no crucial information should be left behind.
 
 CRITICAL: You MUST use proper markdown spacing. Leave a blank empty line between every paragraph and list item.
-Respond using EXACTLY these four headings:
+
+Respond using EXACTLY this format. The PAGE line must appear immediately after each heading, on its own line, before any content:
+
 RIGHTS GRANTED:
-[text]
+PAGE: [page number, e.g. 3]
+[extracted content in markdown]
+
 RIGHTS RESERVED:
-[text]
+PAGE: [page number, e.g. 5]
+[extracted content in markdown]
+
 COVENANTS:
-[text]
+PAGE: [page number, e.g. 7]
+[extracted content in markdown]
+
 PROVISIONS:
-[text]
+PAGE: [page number, e.g. 9]
+[extracted content in markdown]
+
+If you cannot determine the page number for a field, write PAGE: N/A
 
 DOCUMENT TEXT:
 {full_text}"""
@@ -751,12 +764,17 @@ DOCUMENT TEXT:
         response = gemini_model.generate_content(prompt)
         raw = response.text.strip()
 
-        # Parse the structured response into a dictionary
+        # Parse the structured response into a dictionary.
+        # _page keys hold the page number for each field (None if not found/N/A).
         fields = {
             "rights_granted": "*Not present in this document*",
             "rights_reserved": "*Not present in this document*",
             "covenants": "*Not present in this document*",
-            "provisions": "*Not present in this document*"
+            "provisions": "*Not present in this document*",
+            "rights_granted_page": None,
+            "rights_reserved_page": None,
+            "covenants_page": None,
+            "provisions_page": None,
         }
 
         heading_map = {
@@ -765,10 +783,11 @@ DOCUMENT TEXT:
             "COVENANTS:": "covenants",
             "PROVISIONS:": "provisions"
         }
-        
+
         headings = list(heading_map.keys())
         for i, heading in enumerate(headings):
-            if heading not in raw: continue
+            if heading not in raw:
+                continue
             start = raw.index(heading) + len(heading)
             end = len(raw)
             for next_heading in headings[i + 1:]:
@@ -778,13 +797,35 @@ DOCUMENT TEXT:
                         end = candidate
                         break
             extracted = raw[start:end].strip()
+            if not extracted:
+                continue
+
+            # If Gemini placed a PAGE line first, strip it out and save the number
+            lines = extracted.split('\n')
+            if lines and lines[0].strip().upper().startswith('PAGE:'):
+                page_val = lines[0].strip()[5:].strip()
+                if page_val and page_val.upper() != 'N/A':
+                    fields[heading_map[heading] + '_page'] = page_val
+                extracted = '\n'.join(lines[1:]).strip()
+
             if extracted:
                 fields[heading_map[heading]] = extracted
 
         return fields
     except Exception as e:
         print(f"Legal field extraction error: {e}")
-        return {k: f"Extraction failed: {str(e)}" for k in ["rights_granted", "rights_reserved", "covenants", "provisions"]}
+        error_msg = f"Extraction failed: {str(e)}"
+        return {
+            "rights_granted": error_msg,
+            "rights_reserved": error_msg,
+            "covenants": error_msg,
+            "provisions": error_msg,
+            "rights_granted_page": None,
+            "rights_reserved_page": None,
+            "covenants_page": None,
+            "provisions_page": None,
+        }
+
 
 def generate_title_report(title_number: str, selected_filenames: list) -> dict:
     title_number = title_number.upper()

@@ -158,13 +158,17 @@ export default function TitleReportPage() {
 
       if (!doc.is_oce) {
         lines.push('')
-        lines.push(`RIGHTS GRANTED:\n${doc.rights_granted || '[NOT FOUND]'}`)
+        const pgRG = doc.rights_granted_page ? ` (Page ${doc.rights_granted_page})` : ''
+        const pgRR = doc.rights_reserved_page ? ` (Page ${doc.rights_reserved_page})` : ''
+        const pgC  = doc.covenants_page  ? ` (Page ${doc.covenants_page})` : ''
+        const pgP  = doc.provisions_page ? ` (Page ${doc.provisions_page})` : ''
+        lines.push(`RIGHTS GRANTED${pgRG}:\n${doc.rights_granted || '[NOT FOUND]'}`)
         lines.push('')
-        lines.push(`RIGHTS RESERVED:\n${doc.rights_reserved || '[NOT FOUND]'}`)
+        lines.push(`RIGHTS RESERVED${pgRR}:\n${doc.rights_reserved || '[NOT FOUND]'}`)
         lines.push('')
-        lines.push(`COVENANTS:\n${doc.covenants || '[NOT FOUND]'}`)
+        lines.push(`COVENANTS${pgC}:\n${doc.covenants || '[NOT FOUND]'}`)
         lines.push('')
-        lines.push(`PROVISIONS:\n${doc.provisions || '[NOT FOUND]'}`)
+        lines.push(`PROVISIONS${pgP}:\n${doc.provisions || '[NOT FOUND]'}`)
       }
 
       lines.push('')
@@ -370,24 +374,32 @@ export default function TitleReportPage() {
                   {!doc.is_oce && (
                     <div className="divide-y divide-gray-100">
                       {[
-                        { key: 'rights_granted', label: 'Rights Granted' },
-                        { key: 'rights_reserved', label: 'Rights Reserved' },
-                        { key: 'covenants', label: 'Covenants' },
-                        { key: 'provisions', label: 'Provisions' }
-                      ].map(({ key, label }) => {
+                        { key: 'rights_granted',  pageKey: 'rights_granted_page',  label: 'Rights Granted' },
+                        { key: 'rights_reserved', pageKey: 'rights_reserved_page', label: 'Rights Reserved' },
+                        { key: 'covenants',       pageKey: 'covenants_page',       label: 'Covenants' },
+                        { key: 'provisions',      pageKey: 'provisions_page',      label: 'Provisions' }
+                      ].map(({ key, pageKey, label }) => {
                         const fieldId = `${index}-${key}`
                         const value = doc[key] || '[NOT FOUND]'
+                        const pageRef = doc[pageKey] || null
                         const isCopied = copiedField === fieldId
                         const isPlaceholder = value.startsWith('[') || value.startsWith('*Not present')
 
                         return (
                           <div key={key} className="px-5 py-4">
 
-                            {/* Field label + copy button */}
+                            {/* Field label + page badge + copy button */}
                             <div className="flex items-center justify-between mb-3">
-                              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                                {label}
-                              </h4>
+                              <div className="flex items-center gap-2">
+                                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                                  {label}
+                                </h4>
+                                {pageRef && (
+                                  <span className="text-xs bg-indigo-50 text-indigo-500 border border-indigo-100 px-2 py-0.5 rounded-full font-medium">
+                                    Page {pageRef}
+                                  </span>
+                                )}
+                              </div>
                               <button
                                 onClick={() => copyToClipboard(value, fieldId)}
                                 className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
