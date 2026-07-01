@@ -14,6 +14,7 @@ import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
 import { apiFetch } from '../../../../lib/api'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 // Document types this tool supports — shown as hints in the selection panel
 const SUPPORTED_FORMS = ["TA6", "TA10", "TA13"]
@@ -464,7 +465,7 @@ export default function TitleCheckPage() {
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto p-4">
               <div className="prose prose-sm max-w-none text-gray-800 text-sm whitespace-pre-wrap border border-gray-200 rounded-lg p-4 bg-gray-50">
-                <ReactMarkdown>{finalReport}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{finalReport}</ReactMarkdown>
               </div>
             </div>
             <div className="p-4 border-t border-gray-100 flex gap-2">

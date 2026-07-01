@@ -10,6 +10,7 @@ import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
 import { apiFetch } from '../../../../lib/api'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 // Human-readable labels for document types shown in the selection panel
 const DOC_TYPE_LABELS = {
@@ -416,7 +417,7 @@ export default function TitleReportPage() {
                               // Render LLM markdown output with proper formatting
                               // prose class from Tailwind Typography gives clean text styling
                               <div className="prose prose-sm max-w-none prose-indigo text-gray-800">
-                                <ReactMarkdown>{value}</ReactMarkdown>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
                               </div>
                             )}
                           </div>

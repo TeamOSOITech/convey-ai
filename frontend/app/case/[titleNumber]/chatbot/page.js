@@ -10,6 +10,7 @@ import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
 import { apiFetch } from '../../../../lib/api'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 export default function ChatbotPage() {
   const { titleNumber } = useParams()
@@ -337,7 +338,7 @@ export default function ChatbotPage() {
                 {/* Render answer/error text — use ReactMarkdown so inline [Source:] refs render nicely */}
                 {msg.role === 'assistant' ? (
                   <div className="text-sm text-gray-800 prose prose-sm max-w-none">
-                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                   </div>
                 ) : (
                   // User bubble — plain text is fine

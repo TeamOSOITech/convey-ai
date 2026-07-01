@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 // app/case/[titleNumber]/extract/page.js
 //
 // Smart Extract Tool — general-purpose AI document extraction.
@@ -13,6 +13,7 @@ import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
 import { apiFetch } from '../../../../lib/api'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 // Quick Templates
 const TEMPLATES = [
@@ -404,7 +405,7 @@ export default function SmartExtractPage() {
                       <p className="text-sm text-red-500 italic">{r.error}</p>
                     ) : (
                       <div className="prose prose-sm max-w-none prose-purple text-gray-800 prose-headings:font-semibold prose-headings:text-gray-900">
-                        <ReactMarkdown>{r.result}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{r.result}</ReactMarkdown>
                       </div>
                     )}
                   </div>

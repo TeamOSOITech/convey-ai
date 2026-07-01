@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from title_report import generate_title_report
 from title_check import run_title_check
+from auth_utils import require_auth
 
 
 # Create required folders if they don't exist
@@ -62,39 +63,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── JWT Authentication ────────────────────────────────────────────────────────
-# Verifies the Supabase JWT attached by the frontend on every request.
-# The frontend sends: Authorization: Bearer <supabase_access_token>
-# We pass that token to Supabase's auth.get_user() which validates it server-side.
-# This ensures only logged-in users can access any data endpoints.
-
-import asyncio
-from database import supabase as _supabase_auth   # reuse the existing client — no duplicate connection
-
-async def require_auth(authorization: str = Header(default=None)):
-    """
-    FastAPI dependency — call as Depends(require_auth) on any protected route.
-    Extracts the Bearer token from the Authorization header and validates it
-    against Supabase. Raises 401 if missing or invalid.
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid Authorization header. Expected: Bearer <token>"
-        )
-    token = authorization[len("Bearer "):].strip()
-    try:
-        # Run the synchronous Supabase call in a thread so it doesn't block
-        # FastAPI's async event loop under concurrent requests.
-        user_response = await asyncio.to_thread(_supabase_auth.auth.get_user, token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid or expired token")
-        return user_response.user
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[Auth] Token verification failed: {e}")
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+# require_auth is defined in auth_utils.py and imported at the top of this file.
+# It validates the Supabase JWT on every protected route via Depends(require_auth).
 
 # Set to True locally for debug endpoints. Railway should NOT set this.
 DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
@@ -629,24 +599,8 @@ async def debug_sources(title_number: str):
     return {"title_number": title_number.upper(), "sources": sources}
 
 
-@app.get("/formats/{code}")
-async def get_format(code: str, _=Depends(require_auth)):
-    """Fetch an enquiry format by its code (e.g. A1, E7) for manual addition."""
-    from embeddings import format_collection
-    # Case-insensitive lookup isn't directly supported by ChromaDB exactly like this,
-    # but the codes are typically uppercase in the database (e.g., A1, F2a)
-    # We will try both exact match and uppercase match just in case.
-    results = format_collection.get(where={"code": code.upper()})
-    if not results["ids"]:
-        results = format_collection.get(where={"code": code})
-        if not results["ids"]:
-            raise HTTPException(status_code=404, detail=f"Enquiry code '{code}' not found")
-    
-    return {
-        "code": results["metadatas"][0]["code"],
-        "topic": results["metadatas"][0]["topic"],
-        "draft": results["documents"][0]
-    }
+# /formats/{code}, /smart-extract, /form-extract live in routes/
+# and are registered via include_router below.
 
 
 @app.get("/find-page")
@@ -822,82 +776,13 @@ async def reingest_formats_route():
             content={"detail": f"Re-ingestion failed: {str(e)}"}
         )
 
+# ── Route modules ──────────────────────────────────────────────────────────────
+# Each tool's endpoint logic lives in its own file under routes/.
+# Add new tools here by creating routes/<name>.py and registering below.
+from routes.formats      import router as formats_router
+from routes.smart_extract import router as smart_extract_router
+from routes.form_filler   import router as form_filler_router
 
-# ── Smart Extract endpoint ─────────────────────────────────────────────────────
-# General-purpose AI document extraction.
-# The user selects documents and writes free-form extraction instructions.
-# The AI reads each document and returns structured markdown results.
-# One file per request — frontend loops sequentially to avoid Vercel 100s timeout.
-
-class SmartExtractRequest(BaseModel):
-    title_number: str   # e.g. "EX332661"
-    filename:     str   # exact filename as stored in ChromaDB
-    instructions: str   # user's free-form extraction rules
-
-
-@app.post("/smart-extract")
-async def smart_extract_route(req: SmartExtractRequest, _user=Depends(require_auth)):
-    """
-    Runs a user-defined extraction prompt over a single document.
-    Fetches all ChromaDB chunks for the file, concatenates them into full_text,
-    then asks Gemini to extract whatever the user's instructions describe.
-    Returns { filename, result } where result is markdown-formatted output.
-    """
-    try:
-        from title_report import gemini_model
-
-        tn = req.title_number.upper()
-
-        # Fetch every chunk for this specific file
-        results = case_collection.get(
-            where={
-                "$and": [
-                    {"title_number": {"$eq": tn}},
-                    {"source": {"$eq": req.filename}}
-                ]
-            }
-        )
-
-        if not results["ids"]:
-            return JSONResponse(
-                status_code=404,
-                content={"detail": f"No content found for '{req.filename}' in case {tn}. Has this document been uploaded and ingested?"}
-            )
-
-        # Sort chunks by chunk_index so the text is in reading order
-        chunks_with_meta = list(zip(results["documents"], results["metadatas"]))
-        chunks_with_meta.sort(key=lambda x: x[1].get("chunk_index", 0))
-        full_text = "\n\n".join([chunk for chunk, _ in chunks_with_meta])
-
-        prompt = f"""You are a highly experienced UK legal assistant.
-You have been given one legal document and a set of extraction instructions.
-Your job is to read the document carefully and extract exactly what the instructions ask for.
-
-EXTRACTION INSTRUCTIONS:
-{req.instructions}
-
-RULES:
-- Format your output clearly in markdown (use **bold** headings, bullet points, tables where appropriate).
-- If a requested piece of information is not present in the document, write: *[Not found in this document]*
-- Do not add commentary or waffle — give only what was asked for.
-- Be precise. Quote exact text where useful.
-
-DOCUMENT: {req.filename}
-
-DOCUMENT TEXT:
-{full_text}"""
-
-        response = gemini_model.generate_content(prompt)
-        extraction = response.text.strip()
-
-        return {
-            "filename": req.filename,
-            "result": extraction
-        }
-
-    except Exception as e:
-        print(f"[/smart-extract] Error for {req.filename}: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Extraction failed for '{req.filename}': {str(e)}"}
-        )
+app.include_router(formats_router)
+app.include_router(smart_extract_router)
+app.include_router(form_filler_router)

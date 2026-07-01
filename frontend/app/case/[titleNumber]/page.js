@@ -486,6 +486,15 @@ export default function CaseDashboard() {
       color: 'purple'
     },
     {
+      id: 'form-filler',
+      title: 'Form Auto-Filler',
+      description: 'Select a legal form (TR1 and more coming), choose your source documents and the AI extracts all the panel data ready to copy in — editable before use.',
+      icon: '📝',
+      path: `/case/${titleNumber}/form-filler`,
+      available: true,
+      color: 'teal'
+    },
+    {
       id: 'letters',
       title: 'Letter Generator',
       description: 'Generate standard conveyancing letters — Report on Title, Completion Letters, Client Care and more.',
@@ -565,6 +574,13 @@ export default function CaseDashboard() {
       icon: 'bg-purple-100',
       hover: 'hover:border-purple-400',
       badge: 'bg-purple-600'
+    },
+    teal: {
+      bg: 'bg-teal-50',
+      border: 'border-teal-200',
+      icon: 'bg-teal-100',
+      hover: 'hover:border-teal-400',
+      badge: 'bg-teal-600'
     }
   }
 
