@@ -637,68 +637,99 @@
 
 import os
 import google.generativeai as genai
+from groq import Groq
 from dotenv import load_dotenv
 from embeddings import case_collection, format_collection, model
 
 load_dotenv()
 
-# ── Gemini dual-model setup ────────────────────────────────────────────────────
-# Primary  : gemini-2.5-flash-lite  (fast, efficient, latest)
-# Fallback : gemini-2.0-flash-lite  (covers if primary is overloaded / unavailable)
-# call_gemini() tries primary first; on any exception it retries with the fallback.
+# ── 3-Model Fallback Chain ────────────────────────────────────────────────────
+#
+#  Slot 1 (Primary)   → Gemini 2.5 Flash Lite   [Gemini API]
+#  Slot 2 (Secondary) → Gemini 2.0 Flash Lite   [Gemini API]
+#  Slot 3 (Tertiary)  → gpt-oss-120b            [Groq API — OpenAI-compatible]
+#
+#  Goal: never hit a token/rate-limit wall. If any model is overloaded, quota-hit,
+#  or times out, the next slot silently takes over. The user never sees an error.
+#
+#  call_llm() is the single entry-point used by ask_question() and raise_enquiry().
+# ───────────────────────────────────────────────────────────────────────────────
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+_groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-_PRIMARY_MODEL  = "gemini-3.1-flash-lite"
-_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+_MODELS = [
+    ("gemini", "gemini-3.1-flash-lite"),                  # slot 1 — latest Gemini lite
+    ("gemini", "gemini-2.5-flash-lite"),                  # slot 2 — stable, generous quota
+    ("groq",   "openai/gpt-oss-120b"),                    # slot 3 — Groq, separate provider
+]
 
 
-def call_gemini(system_prompt: str, conversation: list, user_message: str) -> str:
+def call_llm(system_prompt: str, conversation: list, user_message: str) -> str:
     """
-    Send a chat completion request to Gemini.
-    Tries the primary model first; falls back to the secondary model on any error.
+    Universal LLM caller with automatic 3-model fallback.
+
+    Tries each model in _MODELS in order. On ANY exception (rate limit, quota,
+    timeout, context-too-long, etc.) it logs the error and moves to the next slot.
+    Raises RuntimeError only if ALL three models fail.
 
     Args:
-        system_prompt  : The system/context instruction string.
-        conversation   : List of {role, content} dicts representing prior turns
-                         (roles must be 'user' or 'model' — Gemini convention).
-        user_message   : The final user turn to respond to.
+        system_prompt : The system/instruction string.
+        conversation  : Prior turns as [{role, content}] — roles 'user'/'assistant'.
+        user_message  : The current user turn to respond to.
 
     Returns:
-        The model's response text.
+        The model's response as a plain string.
     """
+    errors = {}
+
+    for provider, model_name in _MODELS:
+        try:
+            if provider == "gemini":
+                return _call_gemini(model_name, system_prompt, conversation, user_message)
+            else:
+                return _call_groq(model_name, system_prompt, conversation, user_message)
+
+        except Exception as err:
+            label = f"{provider}/{model_name}"
+            errors[label] = str(err)
+            print(f"[chatbot] ⚠ '{label}' failed: {err} — trying next model...")
+
+    # All three failed
+    error_summary = " | ".join(f"{k}: {v}" for k, v in errors.items())
+    raise RuntimeError(f"All 3 LLM models failed. Errors — {error_summary}")
+
+
+# ── Provider-specific implementations ──────────────────────────────────────────────────
+
+def _call_gemini(model_name: str, system_prompt: str, conversation: list, user_message: str) -> str:
+    """Call a Gemini model via the google-generativeai SDK."""
     def _build_history(conv):
-        """Convert {role, content} list → Gemini Content objects format."""
         history = []
         for msg in conv:
-            # Gemini uses 'model' not 'assistant'
             role = "model" if msg["role"] == "assistant" else "user"
             history.append({"role": role, "parts": [msg["content"]]})
         return history
 
-    def _try_model(model_name: str) -> str:
-        gemini = genai.GenerativeModel(
-            model_name=model_name,
-            system_instruction=system_prompt
-        )
-        chat   = gemini.start_chat(history=_build_history(conversation))
-        resp   = chat.send_message(user_message)
-        return resp.text.strip()
+    gm = genai.GenerativeModel(model_name=model_name, system_instruction=system_prompt)
+    chat = gm.start_chat(history=_build_history(conversation))
+    resp = chat.send_message(user_message)
+    return resp.text.strip()
 
-    # Try primary
-    try:
-        return _try_model(_PRIMARY_MODEL)
-    except Exception as primary_err:
-        print(f"[chatbot] Primary model '{_PRIMARY_MODEL}' failed: {primary_err}. Trying fallback...")
 
-    # Try fallback
-    try:
-        return _try_model(_FALLBACK_MODEL)
-    except Exception as fallback_err:
-        raise RuntimeError(
-            f"Both Gemini models failed. "
-            f"Primary: {primary_err} | Fallback: {fallback_err}"
-        ) from fallback_err
+def _call_groq(model_name: str, system_prompt: str, conversation: list, user_message: str) -> str:
+    """Call a model hosted on Groq via its OpenAI-compatible API."""
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in conversation:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_message})
+
+    response = _groq_client.chat.completions.create(
+        model=model_name,
+        messages=messages,
+        max_tokens=2048
+    )
+    return response.choices[0].message.content.strip()
 
 def get_current_document_context(query_embedding: list, title_number: str, current_document: str, max_chunks: int = 5) -> list:
     """Fetches chunks STRICTLY from the currently open document."""
@@ -818,7 +849,7 @@ PRIORITY RULES:
     for msg in history[:-1]:
         groq_messages.append({"role": msg["role"], "content": msg["content"]})
 
-    answer_text = call_gemini(
+    answer_text = call_llm(
         system_prompt=system_prompt,
         conversation=groq_messages,
         user_message=question
@@ -934,7 +965,7 @@ FORMAT LIBRARY TEMPLATE:
     for msg in history[:-1]:
         prior_turns.append({"role": msg["role"], "content": msg["content"]})
 
-    generated_text = call_gemini(
+    generated_text = call_llm(
         system_prompt=system_prompt,
         conversation=prior_turns,
         user_message=f"Generate the formal enquiry text for enquiry {enquiry_code} — {enquiry_topic}. Issue: {issue}"

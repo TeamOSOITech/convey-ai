@@ -9,6 +9,7 @@ chromadb
 sentence-transformers
 
 
+groq
 supabase
 websockets
 Pillow
