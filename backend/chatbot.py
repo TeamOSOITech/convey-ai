@@ -636,13 +636,69 @@
 # chatbot.py — handles all AI chat functionality
 
 import os
-from groq import Groq
+import google.generativeai as genai
 from dotenv import load_dotenv
 from embeddings import case_collection, format_collection, model
 
 load_dotenv()
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# ── Gemini dual-model setup ────────────────────────────────────────────────────
+# Primary  : gemini-2.5-flash-lite  (fast, efficient, latest)
+# Fallback : gemini-2.0-flash-lite  (covers if primary is overloaded / unavailable)
+# call_gemini() tries primary first; on any exception it retries with the fallback.
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+_PRIMARY_MODEL  = "gemini-3.1-flash-lite"
+_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+
+
+def call_gemini(system_prompt: str, conversation: list, user_message: str) -> str:
+    """
+    Send a chat completion request to Gemini.
+    Tries the primary model first; falls back to the secondary model on any error.
+
+    Args:
+        system_prompt  : The system/context instruction string.
+        conversation   : List of {role, content} dicts representing prior turns
+                         (roles must be 'user' or 'model' — Gemini convention).
+        user_message   : The final user turn to respond to.
+
+    Returns:
+        The model's response text.
+    """
+    def _build_history(conv):
+        """Convert {role, content} list → Gemini Content objects format."""
+        history = []
+        for msg in conv:
+            # Gemini uses 'model' not 'assistant'
+            role = "model" if msg["role"] == "assistant" else "user"
+            history.append({"role": role, "parts": [msg["content"]]})
+        return history
+
+    def _try_model(model_name: str) -> str:
+        gemini = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=system_prompt
+        )
+        chat   = gemini.start_chat(history=_build_history(conversation))
+        resp   = chat.send_message(user_message)
+        return resp.text.strip()
+
+    # Try primary
+    try:
+        return _try_model(_PRIMARY_MODEL)
+    except Exception as primary_err:
+        print(f"[chatbot] Primary model '{_PRIMARY_MODEL}' failed: {primary_err}. Trying fallback...")
+
+    # Try fallback
+    try:
+        return _try_model(_FALLBACK_MODEL)
+    except Exception as fallback_err:
+        raise RuntimeError(
+            f"Both Gemini models failed. "
+            f"Primary: {primary_err} | Fallback: {fallback_err}"
+        ) from fallback_err
 
 def get_current_document_context(query_embedding: list, title_number: str, current_document: str, max_chunks: int = 5) -> list:
     """Fetches chunks STRICTLY from the currently open document."""
@@ -758,18 +814,15 @@ PRIORITY RULES:
 [OTHER CASE DOCUMENTS CONTEXT]
 {other_context if other_context else "None available."}"""
 
-    groq_messages = [{"role": "system", "content": system_prompt}]
-    for msg in history[:-1]:  
+    groq_messages = []
+    for msg in history[:-1]:
         groq_messages.append({"role": msg["role"], "content": msg["content"]})
-    groq_messages.append({"role": "user", "content": question})
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=groq_messages,
-        max_tokens=2048
+    answer_text = call_gemini(
+        system_prompt=system_prompt,
+        conversation=groq_messages,
+        user_message=question
     )
-
-    answer_text = response.choices[0].message.content
 
     import re
 
@@ -877,24 +930,20 @@ FORMAT LIBRARY TEMPLATE:
 [CASE FACTS - OTHER DOCUMENTS]
 {other_context if other_context else "None available."}"""
 
-    groq_messages = [{"role": "system", "content": system_prompt}]
+    prior_turns = []
     for msg in history[:-1]:
-        groq_messages.append({"role": msg["role"], "content": msg["content"]})
-    groq_messages.append({
-        "role": "user",
-        "content": f"Generate the formal enquiry text for enquiry {enquiry_code} — {enquiry_topic}. Issue: {issue}"
-    })
+        prior_turns.append({"role": msg["role"], "content": msg["content"]})
 
-    response = client.chat.completions.create(
-        model="meta-llama/llama-4-scout-17b-16e-instruct",
-        messages=groq_messages,
-        max_tokens=2048
+    generated_text = call_gemini(
+        system_prompt=system_prompt,
+        conversation=prior_turns,
+        user_message=f"Generate the formal enquiry text for enquiry {enquiry_code} — {enquiry_topic}. Issue: {issue}"
     )
 
     return {
         "type": "enquiry",
         "enquiry_code": enquiry_code,
         "enquiry_topic": enquiry_topic,
-        "generated_text": response.choices[0].message.content,
+        "generated_text": generated_text,
         "title_number": title_number
     }
