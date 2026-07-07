@@ -11,7 +11,7 @@ Each tool in Convey-AI lives in its own dedicated page under `/case/[titleNumber
 2. `useParams()` — extract `titleNumber` from the URL
 3. `fetchCase()` — load the case and its documents from the backend
 4. Tool-specific state and logic
-5. Phase-based UI rendering (setup → running → results)
+5. Phase-based UI rendering (setup → running → results) 
 
 All pages use `ReactMarkdown` with `remarkGfm` to render AI-generated markdown content — headers, bold text, blockquotes, and numbered lists display properly instead of as raw symbols.
 
