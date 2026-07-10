@@ -4,6 +4,16 @@
 
 ---
 
+## Important Tech Changes
+
+| # | Item | Notes |
+|---|---|---|
+| 1 | LLM  | Add Claude ZDR or Gemini ZDR |
+| 2 | Groq to Gemini | Try to use both groq and gemini for flexibility |
+| 3 | BETTER OCR | AWS Textract or Other paid ocr service, but for pdf on display use ocrmypdf only (currently using) |
+
+---
+
 ## Part 1 — Security Issues Still Open
 
 The original security audit ran on 2026-06-23. The table below shows every issue, its current status, and what still needs to be done.
@@ -387,3 +397,4 @@ Polish
 ├── Custom 404/500 error pages
 └── layout.js metadata update
 ```
+
