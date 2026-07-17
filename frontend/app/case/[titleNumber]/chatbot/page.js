@@ -1,11 +1,8 @@
-'use client'
-// app/case/[titleNumber]/chatbot/page.js
-// The existing AI chatbot — moved here from the root case page
-// Now lives at /case/[titleNumber]/chatbot
-// Back button returns to the case dashboard at /case/[titleNumber]
-// All logic is identical to the original page.js — only routing changed
+// app/case/[titleNumber]/chatbot/page.js - Updated version
 
-import { useEffect, useState, useRef } from 'react'
+'use client'
+
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams } from 'next/navigation'
 import { useAuth } from '../../../../lib/auth'
 import { apiFetch } from '../../../../lib/api'
@@ -16,20 +13,33 @@ export default function ChatbotPage() {
   const { titleNumber } = useParams()
   const [caseData, setCaseData] = useState(null)
   const [selectedDoc, setSelectedDoc] = useState(null)
-  const [pdfPage, setPdfPage] = useState(null)    // drives the #page=N fragment on the iframe
+  const [pdfPage, setPdfPage] = useState(null)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [pageLoading, setPageLoading] = useState(true)
   const messagesEndRef = useRef(null)
   const { user, loading: authLoading } = useAuth()
+  const [pdfHighlight, setPdfHighlight] = useState(null)
+  const [showHighlight, setShowHighlight] = useState(false)
+  const [highlightPosition, setHighlightPosition] = useState({ x: 0, y: 0, width: 0, height: 0 })
+  const [iframeLoaded, setIframeLoaded] = useState(false)
+  const containerRef = useRef(null)
+  const iframeRef = useRef(null)
 
   useEffect(() => { fetchCase() }, [titleNumber])
 
-  // Auto-scroll to latest message whenever messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  useEffect(() => {
+    setPdfHighlight(null)
+    setShowHighlight(false)
+    setPdfPage(null)
+    setIframeLoaded(false)
+    setHighlightPosition({ x: 0, y: 0, width: 0, height: 0 })
+  }, [selectedDoc])
 
   const fetchCase = async () => {
     try {
@@ -46,8 +56,6 @@ export default function ChatbotPage() {
     }
   }
 
-  // Opens a document in the middle-panel viewer by filename.
-  // Clears any active #page fragment so the PDF loads from page 1.
   const openSourceDocument = (filename) => {
     if (!filename) return
     const doc = caseData?.documents?.find(
@@ -55,39 +63,94 @@ export default function ChatbotPage() {
     )
     if (doc) {
       setSelectedDoc(doc)
-      setPdfPage(null)   // clear page jump so the doc opens at the beginning
+      setPdfPage(null)
+      setPdfHighlight(null)
+      setShowHighlight(false)
+      setIframeLoaded(false)
     } else {
       alert(`Document '${filename}' not found.`)
     }
   }
 
-  // Opens a document AND jumps to the estimated page containing the ref phrase.
-  // Calls /find-page on the backend which searches ChromaDB chunks for the phrase,
-  // then uses #page=N — the one PDF fragment Chrome's native viewer actually supports.
-  const openCitation = async (filename, ref) => {
-    if (!filename || !ref) return
+  const openCitation = (chunk) => {
+    if (!chunk) return
     const doc = caseData?.documents?.find(
-      d => d.filename.trim().toLowerCase() === filename.trim().toLowerCase()
+      d => d.filename.trim().toLowerCase() === chunk.source.trim().toLowerCase()
     )
     if (!doc) return
-
-    // Load the document immediately so the user sees it switching
+    
     setSelectedDoc(doc)
-    setPdfPage(null)  // reset while we look up the page
-
-    try {
-      const res = await apiFetch(
-        `/find-page?` +
-        `title_number=${encodeURIComponent(titleNumber)}` +
-        `&filename=${encodeURIComponent(filename)}` +
-        `&query=${encodeURIComponent(ref)}`
-      )
-      const data = await res.json()
-      setPdfPage(data.page || 1)
-    } catch {
-      setPdfPage(1)
-    }
+    setPdfPage(chunk.page)
+    setPdfHighlight(chunk.bbox || null)
+    setShowHighlight(true)
+    setIframeLoaded(false)
+    setHighlightPosition({ x: 0, y: 0, width: 0, height: 0 })
   }
+
+  const calculateHighlightPosition = useCallback((bbox) => {
+    if (!bbox || !iframeRef.current || !containerRef.current) {
+      return
+    }
+    
+    try {
+      const iframe = iframeRef.current
+      const container = containerRef.current
+      const iframeRect = iframe.getBoundingClientRect()
+      const containerRect = container.getBoundingClientRect()
+      
+      // Check if bbox values are normalized (0-1) or in points (0-~600)
+      const maxVal = Math.max(...bbox)
+      const isNormalized = maxVal <= 1.0
+      
+      let normalizedBbox
+      
+      if (isNormalized) {
+        normalizedBbox = bbox
+      } else {
+        // Convert points to normalized using standard A4 page size
+        const pageWidth = 595.28
+        const pageHeight = 841.89
+        
+        normalizedBbox = [
+          bbox[0] / pageWidth,
+          bbox[1] / pageHeight,
+          bbox[2] / pageWidth,
+          bbox[3] / pageHeight
+        ]
+      }
+      
+      // Calculate pixel positions relative to container
+      const x = normalizedBbox[0] * iframeRect.width + (iframeRect.left - containerRect.left)
+      const y = normalizedBbox[1] * iframeRect.height + (iframeRect.top - containerRect.top)
+      const width = (normalizedBbox[2] - normalizedBbox[0]) * iframeRect.width
+      const height = (normalizedBbox[3] - normalizedBbox[1]) * iframeRect.height
+      
+      setHighlightPosition({ x, y, width, height })
+    } catch (err) {
+      console.error('Error calculating highlight position:', err)
+    }
+  }, [])
+
+  const handleIframeLoad = useCallback(() => {
+    setIframeLoaded(true)
+    if (pdfHighlight && showHighlight) {
+      setTimeout(() => {
+        calculateHighlightPosition(pdfHighlight)
+      }, 500)
+    }
+  }, [pdfHighlight, showHighlight, calculateHighlightPosition])
+
+  // Recalculate on resize
+  useEffect(() => {
+    const handleResize = () => {
+      if (pdfHighlight && showHighlight && iframeLoaded) {
+        calculateHighlightPosition(pdfHighlight)
+      }
+    }
+    
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [pdfHighlight, showHighlight, iframeLoaded, calculateHighlightPosition])
 
   const sendMessage = async (type) => {
     if (!input.trim()) return
@@ -95,53 +158,49 @@ export default function ChatbotPage() {
     const userMessage = input
     setInput('')
 
-    // Append user message to chat history immediately for responsive feel
     const newMessages = [...messages, { role: 'user', content: userMessage }]
     setMessages(newMessages)
     setLoading(true)
 
     try {
-      // Build full conversation history to give the AI memory of prior turns
       const history = newMessages.map(msg => ({
         role: msg.role,
         content: msg.content
       }))
 
       if (type === 'question') {
-        const res = await apiFetch(
-          `/chat?title_number=${encodeURIComponent(titleNumber)}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              question: userMessage,
-              history,
-              current_document: selectedDoc ? selectedDoc.filename : null
-            })
-          }
-        )
+        const res = await apiFetch(`/chat?title_number=${encodeURIComponent(titleNumber)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question: userMessage,
+            history,
+            current_document: selectedDoc ? selectedDoc.filename : null
+          })
+        })
         const data = await res.json()
+        
+        // Clean citations
+        const cleanedAnswer = data.answer
+          .replace(/【C(\d+)】/g, '[C$1]')
+          .replace(/\[C(\d+)\]/g, '[C$1]')
+        
         setMessages(prev => [...prev, {
           role: 'assistant',
           type: 'answer',
-          content: data.answer,
-          sources: data.sources || [],
-          citations: data.citations || []
+          content: cleanedAnswer,
+          chunks: data.chunks || []
         }])
-
       } else {
-        const res = await apiFetch(
-          `/raise-enquiry?title_number=${encodeURIComponent(titleNumber)}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              issue: userMessage,
-              history,
-              current_document: selectedDoc ? selectedDoc.filename : null
-            })
-          }
-        )
+        const res = await apiFetch(`/raise-enquiry?title_number=${encodeURIComponent(titleNumber)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            issue: userMessage,
+            history,
+            current_document: selectedDoc ? selectedDoc.filename : null
+          })
+        })
         const data = await res.json()
         setMessages(prev => [...prev, {
           role: 'assistant',
@@ -182,11 +241,7 @@ export default function ChatbotPage() {
       {/* ── LEFT PANEL: Document list ──────────────────────────────── */}
       <div className="w-64 bg-white border-r border-gray-200 flex flex-col flex-shrink-0">
         <div className="p-4 border-b border-gray-100">
-          {/* Back to case dashboard — updated from original "/" to case page */}
-          <a
-            href={`/case/${titleNumber}`}
-            className="text-blue-500 text-sm"
-          >
+          <a href={`/case/${titleNumber}`} className="text-blue-500 text-sm">
             ← Case Dashboard
           </a>
           <h1 className="font-bold text-gray-900 mt-2">{titleNumber}</h1>
@@ -195,7 +250,6 @@ export default function ChatbotPage() {
           </p>
         </div>
 
-        {/* Scrollable document list */}
         <div className="flex-1 overflow-y-auto p-3">
           {caseData?.documents?.length === 0 ? (
             <p className="text-xs text-gray-400 p-2">No documents yet</p>
@@ -203,7 +257,13 @@ export default function ChatbotPage() {
             caseData?.documents?.map((doc) => (
               <div
                 key={doc.id}
-                onClick={() => setSelectedDoc(doc)}
+                onClick={() => {
+                  setSelectedDoc(doc)
+                  setPdfHighlight(null)
+                  setShowHighlight(false)
+                  setPdfPage(null)
+                  setIframeLoaded(false)
+                }}
                 className={`p-3 rounded-lg cursor-pointer mb-2 ${
                   selectedDoc?.id === doc.id
                     ? 'bg-blue-50 border border-blue-200'
@@ -225,15 +285,11 @@ export default function ChatbotPage() {
                     Download OCR PDF
                   </a>
                 )}
-                {/* Delete document */}
                 <button
                   onClick={async (e) => {
                     e.stopPropagation()
                     if (!confirm('Delete this document? This cannot be undone.')) return
-                    await apiFetch(
-                      `/cases/${titleNumber}/documents/${doc.id}`,
-                      { method: 'DELETE' }
-                    )
+                    await apiFetch(`/cases/${titleNumber}/documents/${doc.id}`, { method: 'DELETE' })
                     fetchCase()
                   }}
                   className="text-xs text-red-400 hover:text-red-600 mt-1 block"
@@ -245,7 +301,6 @@ export default function ChatbotPage() {
           )}
         </div>
 
-        {/* Upload new document link */}
         <div className="p-3 border-t border-gray-100">
           <a
             href={`/case/${titleNumber}/upload`}
@@ -256,34 +311,64 @@ export default function ChatbotPage() {
         </div>
       </div>
 
-      {/* ── MIDDLE PANEL: Inline PDF viewer ───────────────────────── */}
+      {/* ── MIDDLE PANEL: PDF Viewer with Highlight ────────────────── */}
       <div className="flex-1 flex flex-col border-r border-gray-200 bg-white">
-        {/* Header shows currently selected document */}
-        <div className="p-4 border-b border-gray-100">
-          <p className="text-sm font-medium text-gray-700">
+        <div className="p-4 border-b border-gray-100 flex justify-between items-center">
+          <p className="text-sm font-medium text-gray-700 truncate">
             {selectedDoc
               ? `${selectedDoc.doc_type} — ${selectedDoc.filename}`
               : 'No document selected'
             }
           </p>
+          {showHighlight && (
+            <button
+              onClick={() => {
+                setShowHighlight(false)
+                setPdfHighlight(null)
+                setHighlightPosition({ x: 0, y: 0, width: 0, height: 0 })
+              }}
+              className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded border border-gray-300 hover:border-gray-500"
+            >
+              ✕ Clear highlight
+            </button>
+          )}
         </div>
 
-        {/* PDF iframe — #page=N fragment used when an InPage Ref is clicked.
-             Chrome's built-in PDF viewer supports #page=N and jumps to that page.
-             The key prop forces a full iframe remount whenever the URL or page changes,
-             ensuring the browser actually loads the new fragment. */}
-        <div className="flex-1 overflow-hidden">
+        <div ref={containerRef} className="flex-1 overflow-hidden bg-gray-100 relative">
           {selectedDoc && selectedDoc.file_url ? (
-            <iframe
-              key={selectedDoc.file_url + (pdfPage ?? '')}  // remount on doc or page change
-              src={
-                pdfPage
-                  ? `${selectedDoc.file_url}#page=${pdfPage}`
-                  : selectedDoc.file_url
-              }
-              className="w-full h-full border-0"
-              title={selectedDoc.filename}
-            />
+            <>
+              <iframe
+                ref={iframeRef}
+                key={`${selectedDoc.id}-${pdfPage || 1}`}
+                src={`${selectedDoc.file_url}${pdfPage ? `#page=${pdfPage}` : ''}`}
+                className="w-full h-full"
+                style={{
+                  border: 'none',
+                  backgroundColor: 'white'
+                }}
+                title={`PDF Viewer: ${selectedDoc.filename}`}
+                allow="fullscreen"
+                onLoad={handleIframeLoad}
+              />
+              
+              {/* Highlight Overlay - fixed position over the iframe */}
+              {showHighlight && pdfHighlight && highlightPosition.width > 0 && highlightPosition.height > 0 && (
+                <div
+                  className="absolute pointer-events-none"
+                  style={{
+                    left: `${highlightPosition.x}px`,
+                    top: `${highlightPosition.y}px`,
+                    width: `${Math.max(highlightPosition.width, 2)}px`,
+                    height: `${Math.max(highlightPosition.height, 2)}px`,
+                    border: '3px solid #fbbf24',
+                    backgroundColor: 'rgba(251, 191, 36, 0.25)',
+                    borderRadius: '2px',
+                    boxShadow: '0 0 20px rgba(251, 191, 36, 0.3), inset 0 0 20px rgba(251, 191, 36, 0.1)',
+                    zIndex: 10
+                  }}
+                />
+              )}
+            </>
           ) : (
             <div className="flex items-center justify-center h-full">
               <p className="text-gray-300 text-sm">
@@ -292,6 +377,42 @@ export default function ChatbotPage() {
             </div>
           )}
         </div>
+
+        {/* Page navigation */}
+        {selectedDoc && (
+          <div className="p-2 border-t border-gray-100 flex justify-center items-center gap-4 bg-white">
+            <button
+              onClick={() => {
+                const currentPage = pdfPage || 1
+                if (currentPage > 1) {
+                  setPdfPage(currentPage - 1)
+                  setShowHighlight(false)
+                  setPdfHighlight(null)
+                  setIframeLoaded(false)
+                }
+              }}
+              disabled={(pdfPage || 1) <= 1}
+              className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              ← Previous
+            </button>
+            <span className="text-sm text-gray-600">
+              Page {pdfPage || 1}
+            </span>
+            <button
+              onClick={() => {
+                const currentPage = pdfPage || 1
+                setPdfPage(currentPage + 1)
+                setShowHighlight(false)
+                setPdfHighlight(null)
+                setIframeLoaded(false)
+              }}
+              className="px-3 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200"
+            >
+              Next →
+            </button>
+          </div>
+        )}
       </div>
 
       {/* ── RIGHT PANEL: AI Chatbot ────────────────────────────────── */}
@@ -303,7 +424,6 @@ export default function ChatbotPage() {
           </p>
         </div>
 
-        {/* Message history */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {messages.length === 0 && (
             <div className="text-center text-gray-300 text-sm mt-8">
@@ -326,7 +446,6 @@ export default function ChatbotPage() {
                       ? 'bg-red-50 border border-red-200 rounded-2xl rounded-tl-sm p-3'
                       : 'bg-gray-100 rounded-2xl rounded-tl-sm p-3'
               }`}>
-                {/* Enquiry code badge */}
                 {msg.type === 'enquiry' && (
                   <div className="flex items-center gap-2 mb-2">
                     <span className="bg-green-600 text-white text-xs px-2 py-0.5 rounded-full font-medium">
@@ -335,76 +454,60 @@ export default function ChatbotPage() {
                     <span className="text-xs text-green-700">{msg.enquiry_topic}</span>
                   </div>
                 )}
-                {/* Render answer/error text — use ReactMarkdown so inline [Source:] refs render nicely */}
+                
                 {msg.role === 'assistant' ? (
                   <div className="text-sm text-gray-800 prose prose-sm max-w-none">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {msg.content}
+                    </ReactMarkdown>
                   </div>
                 ) : (
-                  // User bubble — plain text is fine
                   <p className="text-sm text-white">{msg.content}</p>
                 )}
 
-                {/* ── SOURCE DOCUMENT PILLS ─────────────────────────────────────────
-                     Shown only on answer messages that have associated sources.
-                     Each pill is a button that calls openSourceDocument() to swap
-                     the middle-panel PDF viewer to that document — no redirect,
-                     no new tab, everything stays in the same page session.
-                ─────────────────────────────────────────────────────────────────── */}
-                {msg.type === 'answer' && msg.sources && msg.sources.length > 0 && (
+                {/* ── In-Page References ────────────────────────────────────────── */}
+                {msg.type === 'answer' && msg.chunks && msg.chunks.length > 0 && (
                   <div className="mt-3 pt-2 border-t border-gray-200">
-                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
-                      📄 Sources
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {msg.sources.map((src, si) => (
-                        <button
-                          key={si}
-                          onClick={() => openSourceDocument(src)}
-                          title={`Open ${src} in the viewer`}
-                          className="inline-flex items-center gap-1 bg-blue-50 hover:bg-blue-100 active:bg-blue-200 border border-blue-200 text-blue-700 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer max-w-[200px]"
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                          </svg>
-                          <span className="truncate">{src}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* ── INPAGE REF PILLS ────────────────────────────────────────────
-                     Each citation is a {source, ref} pair from the backend.
-                     Clicking loads the paired source doc AND applies #search=ref
-                     to the iframe, making Chrome's PDF viewer jump to that phrase.
-                     Purple colour distinguishes them from blue source pills.
-                ─────────────────────────────────────────────────────────────────── */}
-                {msg.type === 'answer' && msg.citations && msg.citations.length > 0 && (
-                  <div className="mt-2">
                     <p className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider mb-1.5">
                       📍 In-Page References
                     </p>
                     <div className="flex flex-wrap gap-1.5">
-                      {msg.citations.map((cite, ci) => (
-                        <button
-                          key={ci}
-                          onClick={() => openCitation(cite.source, cite.ref)}
-                          title={`Jump to "${cite.ref}" in ${cite.source}`}
-                          className="inline-flex items-center gap-1 bg-purple-50 hover:bg-purple-100 active:bg-purple-200 border border-purple-200 text-purple-700 rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors cursor-pointer max-w-[200px]"
-                        >
-                          {/* Location pin icon */}
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                          </svg>
-                          <span className="truncate">{cite.ref}</span>
-                        </button>
-                      ))}
+                      {msg.chunks.map((cite, ci) => {
+                        const source = cite.source || cite.filename || 'Unknown'
+                        const page = cite.page || 1
+                        const bbox = cite.bbox || null
+                        const isActive = showHighlight && 
+                          bbox && 
+                          pdfHighlight === bbox &&
+                          selectedDoc?.filename === source
+                        
+                        return (
+                          <button
+                            key={ci}
+                            onClick={() => openCitation(cite)}
+                            title={`Jump to page ${page} in ${source}`}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md transition-colors ${
+                              isActive
+                                ? 'bg-purple-200 border-purple-400 text-purple-900'
+                                : 'bg-purple-50 hover:bg-purple-100 border border-purple-200 text-purple-700'
+                            }`}
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 0111.314 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                            <span>
+                              {source.split('.')[0]}
+                              {page && ` • Pg ${page}`}
+                            </span>
+                          </button>
+                        )
+                      })}
                     </div>
                   </div>
                 )}
-                {/* Copy button for assistant messages */}
+                
+                {/* Copy button */}
                 {msg.role === 'assistant' && msg.type !== 'error' && (
                   <button
                     onClick={() => copyToClipboard(msg.content)}
@@ -417,7 +520,6 @@ export default function ChatbotPage() {
             </div>
           ))}
 
-          {/* Thinking indicator */}
           {loading && (
             <div className="flex justify-start">
               <div className="bg-gray-100 rounded-2xl rounded-tl-sm px-4 py-2">
@@ -428,7 +530,6 @@ export default function ChatbotPage() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input area */}
         <div className="p-4 border-t border-gray-100">
           <textarea
             value={input}

@@ -3,6 +3,7 @@
 import chromadb                                    # our vector database
 from sentence_transformers import SentenceTransformer  # embedding model
 import os
+import uuid
 
 # Step 1: Load the embedding model
 # This runs locally on your machine — text never leaves your computer
@@ -13,10 +14,17 @@ import os
 )"""
 
 model = SentenceTransformer(
-    "BAAI/bge-large-en-v1.5",   # smaller model — fits in Railway free tier
+    "all-MiniLM-L6-v2",   # smaller model — fits in Railway free tier
     cache_folder="./models"
 )
 
+# model = None  # Load on first use
+
+# def get_model():
+#     global model
+#     if model is None:
+#         model = SentenceTransformer("BAAI/bge-large-en-v1.5")
+#     return model
 # Step 2: Create a ChromaDB client
 # persist_directory means data is saved to disk, not lost when server restarts
 DATA_DIR = os.getenv("DATA_DIR", "./data")
@@ -84,31 +92,46 @@ checklist_collection = client.get_or_create_collection(
 #     }
 def store_case_chunks(chunks: list, title_number: str):
     """
-    Takes chunks from a case document and stores them in ChromaDB
-    title_number is used to identify which case these chunks belong to
+    Converts document chunks to embeddings and stores them in ChromaDB.
+
+    Each chunk already contains:
+        - source
+        - title_number
+        - page
+        - bbox
+        - chunk_index
+        - total_chunks
     """
 
-    # Step 4: Convert each chunk's text to a vector
-    texts = [chunk["text"] for chunk in chunks]        
-    embeddings = model.encode(texts).tolist()           
+    # Convert chunk text into embeddings
+    texts = [chunk["text"] for chunk in chunks]
+    embeddings = model.encode(texts).tolist()
 
-    # Step 5: Prepare data for ChromaDB
-    ids = []         
-    metadatas = []   
+    ids = []
+    metadatas = []
 
-    for i, chunk in enumerate(chunks):
-        # FIX: Include the source filename in the ID so documents don't overwrite each other!
-        # We replace spaces with underscores just to keep the IDs clean
-        safe_source = chunk["metadata"]["source"].replace(" ", "_")
-        ids.append(f"{title_number}_{safe_source}_chunk_{i}")
+    for chunk in chunks:
 
-        # store metadata so we can filter by title number later
-        metadatas.append({
-            **chunk["metadata"],          
-            "title_number": title_number  
-        })
+        metadata = chunk["metadata"]
 
-    # Step 6: Store everything in ChromaDB
+        safe_source = (
+            metadata["source"]
+            .replace(" ", "_")
+            .replace("/", "_")
+            .replace("\\", "_")
+        )
+
+        page = metadata["page"]
+        chunk_index = metadata["chunk_index"]
+
+        ids.append(
+            f"{title_number}_{safe_source}_p{page}_c{chunk_index}_{uuid.uuid4().hex[:8]}"
+        )
+
+        # Store only metadata here.
+        # The chunk text itself is already stored in the `documents` field.
+        metadatas.append(metadata)
+
     case_collection.add(
         ids=ids,
         embeddings=embeddings,

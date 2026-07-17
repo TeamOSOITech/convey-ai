@@ -1,90 +1,76 @@
-# ocr.py — handles all OCR related tasks
+# ocr.py - Add page dimension extraction
 
-import ocrmypdf # type: ignore
-import fitz # type: ignore
-import tempfile
-import os
-from PIL import ImageFile # type: ignore
-
-ImageFile.LOAD_TRUNCATED_IMAGES = True
-
-# This is the folder where we permanently save OCR'd PDFs
-DATA_DIR = os.getenv("DATA_DIR", "./data")
-PROCESSED_FOLDER = f"{DATA_DIR}/processed_pdfs"
-
-def process_pdf(input_pdf_bytes: bytes, filename: str) -> dict:
+def process_pdf(pdf_bytes: bytes, filename: str) -> dict:
     """
-    Takes a PDF as raw bytes and original filename
-    Returns extracted text + saves the selectable PDF permanently
+    Process a PDF file: extract text with bounding boxes using OCR.
+    Returns page dimensions along with text blocks.
     """
-
-    # Step 1: Save uploaded bytes to a temp file for processing
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as input_file:
-        input_file.write(input_pdf_bytes)
-        input_path = input_file.name
-
-    # Step 2: Build the permanent output path using original filename
-    # e.g. processed_pdfs/Lease4_ocr.pdf
-    # Handle both uppercase and lowercase PDF extensions
-    # Remove any existing _ocr suffix first, then add it cleanly
-    clean_filename = filename\
-        .replace(" ", "_")\
-        .replace(",", "")\
-        .replace("(", "")\
-        .replace(")", "")
-
-    # Handle both uppercase and lowercase extensions
-    if clean_filename.upper().endswith(".PDF"):
-        clean_filename = clean_filename[:-4]  # remove extension
-
-    # Remove any existing _ocr suffix to avoid double _ocr_ocr
-    if clean_filename.endswith("_ocr"):
-        clean_filename = clean_filename[:-4]
-
-    # Add _ocr.pdf cleanly
-    clean_filename = clean_filename + "_ocr.pdf"
-    output_path = os.path.join(PROCESSED_FOLDER, clean_filename)
-
-    # Step 3: Make sure the processed_pdfs folder exists
-    os.makedirs(PROCESSED_FOLDER, exist_ok=True)
-
     try:
-        # Step 4: Run OCR — reads scanned images and adds real text layer
-        ocrmypdf.ocr(
-            input_path,
-            output_path,
-            force_ocr=True,
-            language="eng",
-            optimize=0,
-            oversample=300,  # minimal memory usage for free tier
-            jobs=1,         # single threaded to reduce memory
-        )
-
-        # Step 5: Extract text from the OCR'd PDF
-        extracted_text = ""
-        pdf_document = fitz.open(output_path)
-        page_count = len(pdf_document)
-
-        for page in pdf_document:
-            extracted_text += page.get_text()
-
-        pdf_document.close()
-
-        return {
+        import fitz  # PyMuPDF
+        
+        # Open the PDF from bytes
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        result = {
             "success": True,
-            "text": extracted_text,
-            "pages": page_count,
-            "saved_pdf": output_path    # path where the selectable PDF is saved
+            "pages": [],
+            "filename": filename
         }
-
+        
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            
+            # Get page dimensions in points
+            page_width = page.rect.width
+            page_height = page.rect.height
+            
+            # Extract text with bounding boxes
+            blocks = []
+            text_instances = page.get_text("words")  # Returns [x0, y0, x1, y1, word, ...]
+            
+            # Group words into blocks (simple approach - group by line)
+            current_block = {"text": "", "bbox": None}
+            
+            for word in text_instances:
+                x0, y0, x1, y1, word_text = word[:5]
+                
+                if current_block["bbox"] is None:
+                    current_block["bbox"] = [x0, y0, x1, y1]
+                else:
+                    # Expand bbox to include this word
+                    current_block["bbox"][0] = min(current_block["bbox"][0], x0)
+                    current_block["bbox"][1] = min(current_block["bbox"][1], y0)
+                    current_block["bbox"][2] = max(current_block["bbox"][2], x1)
+                    current_block["bbox"][3] = max(current_block["bbox"][3], y1)
+                
+                current_block["text"] += word_text + " "
+                
+                # Check if this is the end of a line or block
+                if len(current_block["text"]) > 100 or "\n" in current_block["text"]:
+                    blocks.append({
+                        "text": current_block["text"].strip(),
+                        "bbox": current_block["bbox"]
+                    })
+                    current_block = {"text": "", "bbox": None}
+            
+            # Add any remaining text
+            if current_block["text"].strip():
+                blocks.append({
+                    "text": current_block["text"].strip(),
+                    "bbox": current_block["bbox"]
+                })
+            
+            result["pages"].append({
+                "page": page_num + 1,
+                "blocks": blocks,
+                "width": page_width,
+                "height": page_height
+            })
+        
+        doc.close()
+        return result
+        
     except Exception as e:
         return {
             "success": False,
             "error": str(e)
         }
-
-    finally:
-        # Step 6: Only delete the temp INPUT file
-        # We keep the output PDF permanently this time
-        if os.path.exists(input_path):
-            os.remove(input_path)

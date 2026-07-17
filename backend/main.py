@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from ocr import process_pdf
-from chunker import chunk_text
+from chunker import chunk_page
 from embeddings import store_case_chunks, search_formats, case_collection
 from chatbot import ask_question, raise_enquiry
 from database import create_case, add_document, get_case, get_all_cases, delete_document
@@ -19,6 +19,11 @@ from fastapi.responses import JSONResponse
 from title_report import generate_title_report
 from title_check import run_title_check
 from auth_utils import require_auth
+from fastapi import FastAPI, UploadFile, File, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse, Response  # ← ADD Response here
+from ocr import process_pdf
 
 
 # Create required folders if they don't exist
@@ -51,16 +56,22 @@ app = FastAPI()
 # Mount static files AFTER app is created
 app.mount("/processed", StaticFiles(directory=f"{DATA_DIR}/processed_pdfs"), name="processed")
 
+# Update CORS middleware to be more permissive for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_origins=[
         "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
         "https://convey-ai-mauve.vercel.app",
+        "https://*.vercel.app",
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # require_auth is defined in auth_utils.py and imported at the top of this file.
@@ -97,56 +108,69 @@ async def ingest_formats_route():
     ingest_all_enquiries()
     return {"success": True, "message": "Format library ingested"}
 
+# main.py - Updated view-pdf endpoint with proper headers
+
 @app.get("/view-pdf/{filename}")
 async def view_pdf(filename: str):
     """
     Serves a processed PDF file for inline viewing in the browser.
-
-    Security: Uses pathlib to resolve the canonical absolute path and verifies
-    it stays within the intended 'processed_pdfs' directory, preventing path
-    traversal attacks (e.g. ../../.env).
     """
     import pathlib
-
-    # Reject obvious traversal attempts fast — before touching the filesystem
+    import urllib.parse
+    
+    # Decode URL-encoded filename
+    filename = urllib.parse.unquote(filename)
+    
+    # Reject traversal attempts
     if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
         raise HTTPException(status_code=400, detail="Invalid filename")
-
-    # Build the allowed base directory and resolve both to absolute canonical paths
+    
+    # Build path
     base_dir = pathlib.Path(DATA_DIR).resolve() / "processed_pdfs"
     requested_path = (base_dir / filename).resolve()
-
-    # Verify the resolved path is still inside the allowed base directory.
-    # This catches encoded traversal like %2e%2e/ that slips past the string check above.
+    
     if not str(requested_path).startswith(str(base_dir)):
         raise HTTPException(status_code=400, detail="Invalid filename")
-
+    
     if not requested_path.exists():
-        # Do NOT reveal the server-side path in the error response
         raise HTTPException(status_code=404, detail="File not found")
-
-    # Safely encode the filename for the Content-Disposition header to prevent
-    # header injection via newline characters in filenames
-    import urllib.parse
+    
+    # Return with proper headers for iframe viewing
     safe_filename = urllib.parse.quote(filename)
-
+    
     return FileResponse(
         path=str(requested_path),
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'inline; filename="{safe_filename}"',
             "Content-Type": "application/pdf",
-            # Allow our Vercel frontend (all subdomains, including preview URLs)
-            # and localhost on any port to embed this PDF in an iframe.
-            # *.vercel.app covers production + all branch/preview deployments.
-            "Content-Security-Policy": (
-                "frame-ancestors 'self' "
-                "https://*.vercel.app "
-                "http://localhost:* "
-                "https://localhost:*"
-            ),
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Expose-Headers": "*",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            # Disable CSP completely for development - this is the key fix
+            "Content-Security-Policy": "frame-ancestors 'self' *",
+            "X-Frame-Options": "ALLOWALL",
+            "Cross-Origin-Resource-Policy": "cross-origin",
+            "Cross-Origin-Embedder-Policy": "unsafe-none",
         }
     )
+
+# Add OPTIONS handler for CORS preflight
+@app.options("/view-pdf/{filename}")
+async def options_view_pdf(filename: str):
+    return Response(
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "86400",
+            }
+    )
+
 
 @app.get("/")
 def home():
@@ -157,51 +181,80 @@ def health():
     return {"status": "ok"}
 
 @app.post("/upload-zip")
-async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN", _user=Depends(require_auth)):
+async def upload_zip(
+    file: UploadFile = File(...),
+    title_number: str = "UNKNOWN",
+    _user=Depends(require_auth)
+):
     """
-    Receives a contract pack ZIP
-    Extracts all PDFs, OCRs each one, stores everything under the title number
+    Receives a contract pack ZIP,
+    OCRs every PDF,
+    chunks every page,
+    stores everything in ChromaDB.
     """
-    # Normalise title number to uppercase so it matches ChromaDB and Supabase consistently
+
     title_number = title_number.upper()
 
-    # Step 1: Read ZIP bytes
+    # Step 1: Read ZIP
     zip_bytes = await file.read()
 
-    # Step 2: Extract all PDFs from ZIP
+    # Step 2: Extract PDFs
     extracted_files = extract_zip(zip_bytes)
 
     if not extracted_files:
-        return {"success": False, "error": "No PDF files found in ZIP"}
+        return {
+            "success": False,
+            "error": "No PDF files found in ZIP"
+        }
 
-    # Step 3: Make sure case exists in Supabase
+    # Step 3: Ensure case exists
     create_case(title_number)
 
-    # Step 4: Process each PDF
     results = []
+
     for doc in extracted_files:
+
         try:
-            # OCR the PDF
-            ocr_result = process_pdf(doc["pdf_bytes"], doc["filename"])
+
+            # OCR
+            ocr_result = process_pdf(
+                doc["pdf_bytes"],
+                doc["filename"]
+            )
 
             if not ocr_result["success"]:
                 results.append({
                     "filename": doc["filename"],
                     "doc_type": doc["doc_type"],
                     "success": False,
-                    "error": ocr_result.get("error")
+                    "error": ocr_result["error"]
                 })
                 continue
 
-            # Chunk the text
-            chunks = chunk_text(ocr_result["text"], doc["filename"])
+            # Chunk every page
+            all_chunks = []
 
-            # Store in ChromaDB
-            store_case_chunks(chunks, title_number)
+            for page in ocr_result["pages"]:
 
-            # Build URL
+                page_chunks = chunk_page(
+                    blocks=page["blocks"],
+                    source_filename=doc["filename"],
+                    title_number=title_number,
+                    page=page["page"]
+                )
+
+                all_chunks.extend(page_chunks)
+
+            # Store vectors
+            store_case_chunks(all_chunks, title_number)
+
+            # Build download URL
             cleaned = make_clean_filename(doc["filename"])
-            file_url = f"{os.getenv('BACKEND_URL', 'https://convey-ai-production-be43.up.railway.app')}/view-pdf/{cleaned}"
+
+            file_url = (
+                f"{os.getenv('BACKEND_URL', 'https://convey-ai-production-be43.up.railway.app')}"
+                f"/view-pdf/{cleaned}"
+            )
 
             # Register in Supabase
             add_document(
@@ -215,11 +268,12 @@ async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN"
                 "filename": doc["filename"],
                 "doc_type": doc["doc_type"],
                 "success": True,
-                "pages": ocr_result["pages"],
-                "chunks": len(chunks)
+                "pages": len(ocr_result["pages"]),
+                "chunks": len(all_chunks)
             })
 
         except Exception as e:
+
             results.append({
                 "filename": doc["filename"],
                 "doc_type": doc["doc_type"],
@@ -227,7 +281,6 @@ async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN"
                 "error": str(e)
             })
 
-    # Count successes
     successful = [r for r in results if r["success"]]
 
     return {
@@ -238,36 +291,53 @@ async def upload_zip(file: UploadFile = File(...), title_number: str = "UNKNOWN"
         "results": results
     }
 
+
+# main.py - Update the upload endpoints
+
 @app.post("/upload-pdf")
-async def upload_pdf(file: UploadFile = File(...), title_number: str = "UNKNOWN", doc_type: str = "OTHER", _user=Depends(require_auth)):
-    """
-    Full pipeline: PDF → OCR → chunk → embed → store in ChromaDB + Supabase
-    """
-    # Normalise title number to uppercase so it matches ChromaDB and Supabase consistently
+async def upload_pdf(
+    file: UploadFile = File(...),
+    title_number: str = "UNKNOWN",
+    doc_type: str = "OTHER",
+    _user=Depends(require_auth)
+):
+    """Full pipeline: PDF → OCR → Chunk → Embed → Store"""
     title_number = title_number.upper()
-
-    # Step 1: Read uploaded file bytes
     pdf_bytes = await file.read()
-
-    # Step 2: Run OCR to extract text from scanned PDF
+    
+    # Step 2: OCR
     ocr_result = process_pdf(pdf_bytes, file.filename)
     if not ocr_result["success"]:
         return ocr_result
+    
+    # Step 3: Chunk every page with page dimensions
+    all_chunks = []
+    for page_data in ocr_result["pages"]:
+        page_chunks = chunk_page(
+            blocks=page_data["blocks"],
+            source_filename=file.filename,
+            title_number=title_number,
+            page=page_data["page"],
+            page_width=page_data.get("width", 1.0),
+            page_height=page_data.get("height", 1.0)
+        )
+        all_chunks.extend(page_chunks)
 
-    # Step 3: Split extracted text into chunks
-    chunks = chunk_text(ocr_result["text"], file.filename)
+    # Step 4: Store vectors
+    store_case_chunks(all_chunks, title_number)
 
-    # Step 4: Store chunks as vectors in ChromaDB
-    store_case_chunks(chunks, title_number)
-
-    # Step 5: Build the URL using the consistent clean filename function
+    # Step 5: Build download URL
     cleaned = make_clean_filename(file.filename)
-    download_url = f"{os.getenv('BACKEND_URL', 'https://convey-ai-production-be43.up.railway.app')}/view-pdf/{cleaned}"
 
-    # Step 6: Make sure case exists in Supabase
+    download_url = (
+        f"{os.getenv('BACKEND_URL', 'https://convey-ai-production-be43.up.railway.app')}"
+        f"/view-pdf/{cleaned}"
+    )
+
+    # Step 6: Ensure case exists
     create_case(title_number)
 
-    # Step 7: Register this document in Supabase with its URL
+    # Step 7: Register document
     add_document(
         title_number=title_number,
         doc_type=doc_type,
@@ -277,8 +347,8 @@ async def upload_pdf(file: UploadFile = File(...), title_number: str = "UNKNOWN"
 
     return {
         "success": True,
-        "pages": ocr_result["pages"],
-        "total_chunks": len(chunks),
+        "pages": len(ocr_result["pages"]),
+        "total_chunks": len(all_chunks),
         "title_number": title_number,
         "doc_type": doc_type,
         "download_url": download_url
@@ -785,4 +855,4 @@ from routes.form_filler   import router as form_filler_router
 
 app.include_router(formats_router)
 app.include_router(smart_extract_router)
-app.include_router(form_filler_router)
+app.include_router(form_filler_router)
