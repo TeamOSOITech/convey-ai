@@ -19,18 +19,17 @@ All business logic is split across purpose-built modules. `main.py` purely defin
 When `uvicorn main:app` is called, Python executes `main.py` from top to bottom. The startup sequence is:
 
 ```
-1. Imports — all modules are loaded (embeddings.py loads the BAAI model into RAM)
-2. DATA_DIR is set from environment variable (./data locally, /app/data on Railway)
-3. Directories created — processed_pdfs/ and chroma_db/ are guaranteed to exist
-4. FastAPI app object created
-5. Static file mount — /processed/ route serves PDFs directly from disk
-6. CORS middleware applied — restricts which origins can call the API
-7. DEV_MODE flag read — gates debug endpoints
-8. Route functions defined
-9. Route modules imported and registered via app.include_router()
+1. Imports — all modules are loaded (embeddings.py loads the SentenceTransformer
+   model into RAM; storage.py connects to Supabase and ensures the Storage
+   bucket exists)
+2. FastAPI app object created
+3. CORS middleware applied — restricts which origins can call the API
+4. DEV_MODE flag read — gates debug endpoints
+5. Route functions defined
+6. Route modules imported and registered via app.include_router()
 ```
 
-> **Critical:** The `embeddings.py` module is imported at startup. This means the BAAI embedding model (~500MB) is **loaded into RAM on boot**. Cold starts on Railway can take 30–60 seconds as a result. Once warm, all subsequent requests are fast.
+> **Critical:** The `embeddings.py` module is imported at startup, which loads the `all-MiniLM-L6-v2` embedding model into RAM. This is the only local/in-memory state the backend holds — documents, metadata, and vectors all live in Supabase, so there's no local disk to initialise.
 
 ---
 
@@ -38,17 +37,18 @@ When `uvicorn main:app` is called, Python executes `main.py` from top to bottom.
 
 | File | Responsibility |
 |---|---|
-| `main.py` | HTTP routes (endpoints), startup, CORS, static files |
+| `main.py` | HTTP routes (endpoints), startup, CORS |
 | `auth_utils.py` | JWT token validation dependency (`require_auth`) |
-| `database.py` | All Supabase (PostgreSQL) read/write operations |
-| `embeddings.py` | ChromaDB setup, vector embedding, semantic search |
+| `database.py` | All Supabase Postgres read/write operations |
+| `storage.py` | Supabase Storage operations — upload/download/delete/signed-URL for processed PDFs |
+| `embeddings.py` | Embedding model, pgvector storage & similarity search (Postgres) |
 | `chunker.py` | Splits long text into overlapping chunks for storage |
 | `ocr.py` | PDF → searchable text via OCRmyPDF + PyMuPDF |
 | `zip_processor.py` | Extracts PDFs from a ZIP archive and detects document types |
 | `chatbot.py` | RAG chatbot (ask_question) and enquiry generation (raise_enquiry) |
 | `title_report.py` | Title Report generation using Gemini |
 | `title_check.py` | TA6/TA10 form analysis, enquiry matching, draft generation |
-| `ingest_formats.py` | One-time script to populate ChromaDB format_library |
+| `ingest_formats.py` | One-time script to populate the format_library table |
 | `routes/formats.py` | `GET /formats/{code}` — fetch an enquiry template by code |
 | `routes/smart_extract.py` | `POST /smart-extract` — free-form AI extraction from a document |
 | `routes/form_filler.py` | `POST /form-extract` — AI fill a legal form (TR1 etc.) from case docs |
@@ -107,7 +107,7 @@ Creates a new case in the `cases` table. If the case already exists (same title 
 ```
 
 #### `add_document(title_number, doc_type, filename, file_url)`
-Registers a processed document in the `case_documents` table. Called after OCR + ChromaDB embedding is complete. The `file_url` points to the processed PDF on Railway's static file server.
+Registers a processed document in the `case_documents` table. Called after OCR + embedding is complete. Despite the name, `file_url` stores the **Supabase Storage path** (e.g. `EX332661/Lease_ocr.pdf`), not a URL — see `get_case()` below for why.
 
 **`doc_type` values:**
 | Code | Meaning |
@@ -122,13 +122,13 @@ Registers a processed document in the `case_documents` table. Called after OCR +
 | `OTHER` | Any document that doesn't match the above |
 
 #### `get_case(title_number: str)`
-Fetches a case and ALL of its documents. This is the main query the frontend uses to populate the case page. Returns:
+Fetches a case and ALL of its documents. This is the main query the frontend uses to populate the case page. For each document, it swaps the stored Storage *path* for a freshly-minted 1-hour **signed URL** (via `storage.get_signed_url()`) before returning — the frontend never sees a raw path, and the bucket stays private. If signing fails for a row (e.g. a stale/legacy path), `file_url` comes back `null` rather than breaking the whole response. Returns:
 ```json
 {
   "success": true,
   "case": { "id": "...", "title_number": "EX332661", "status": "active" },
   "documents": [
-    { "id": "...", "doc_type": "OCE", "filename": "Title_Register.pdf", "file_url": "https://..." },
+    { "id": "...", "doc_type": "OCE", "filename": "Title_Register.pdf", "file_url": "https://...supabase.co/storage/v1/object/sign/..." },
     ...
   ]
 }
@@ -138,7 +138,7 @@ Fetches a case and ALL of its documents. This is the main query the frontend use
 Returns all cases ordered by `created_at` descending. Used by the dashboard to list every active case.
 
 #### `delete_document(document_id, title_number)`
-Looks up the document by ID, records its filename, then deletes the Supabase record. Returns the filename to the caller (`main.py`) so it can also delete the file from disk and remove chunks from ChromaDB.
+Looks up the document by ID, records its filename, then deletes the Supabase record. Returns the filename to the caller (`main.py`) so it can also delete the object from Supabase Storage and remove the document's chunks from `document_chunks`.
 
 ---
 
@@ -157,9 +157,8 @@ All endpoints listed below. Protected endpoints require `Authorization: Bearer <
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/upload-pdf` | ✅ | Upload a single PDF. Full pipeline: OCR → chunk → embed → Supabase register |
+| `POST` | `/upload-pdf` | ✅ | Upload a single PDF. Full pipeline: OCR → chunk → embed → Storage upload → Supabase register |
 | `POST` | `/upload-zip` | ✅ | Upload a ZIP of PDFs. Extracts, OCRs, chunks, and ingests all files in one call |
-| `GET` | `/view-pdf/{filename}` | ❌ | Serves a processed OCR'd PDF file inline for browser viewing |
 
 ### Case Management Endpoints
 
@@ -168,7 +167,7 @@ All endpoints listed below. Protected endpoints require `Authorization: Bearer <
 | `POST` | `/cases` | ✅ | Create a new case by title number |
 | `GET` | `/cases` | ✅ | Get all cases (dashboard) |
 | `GET` | `/cases/{title_number}` | ✅ | Get a specific case + all its documents |
-| `DELETE` | `/cases/{title_number}/documents/{document_id}` | ✅ | Delete a document from Supabase, disk, and ChromaDB |
+| `DELETE` | `/cases/{title_number}/documents/{document_id}` | ✅ | Delete a document from Supabase (row, Storage object, and vector chunks) |
 
 ### AI Tool Endpoints
 
@@ -187,7 +186,7 @@ All endpoints listed below. Protected endpoints require `Authorization: Bearer <
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/ingest-formats` | ❌ | Seed the ChromaDB format_library (run once after deploy) |
+| `POST` | `/ingest-formats` | ❌ | Seed the format_library table (run once after deploy) |
 | `POST` | `/reingest-formats` | ❌ | Wipe and rebuild the format_library collection |
 | `GET` | `/find-page` | ❌ | Estimate which PDF page a search phrase is on (used by chatbot InPage Ref pills) |
 
@@ -195,7 +194,7 @@ All endpoints listed below. Protected endpoints require `Authorization: Bearer <
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `GET` | `/debug-chunks/{title_number}` | ❌ | Show 5 raw ChromaDB chunks for a case |
+| `GET` | `/debug-chunks/{title_number}` | ❌ | Show 5 raw document_chunks rows for a case |
 | `GET` | `/debug-query/{title_number}` | ❌ | Show what chunks the chatbot would retrieve for a given query |
 | `GET` | `/debug-sources/{title_number}` | ❌ | List all unique source filenames stored for a case |
 
@@ -218,30 +217,32 @@ POST /upload-pdf (or /upload-zip)
          ├── 2. EXTRACT (ZIP only) — zip_processor.py extracts individual PDFs
          │         and auto-detects doc_type from filename keywords
          │
-         ├── 3. OCR — ocr.py runs ocrmypdf on the PDF bytes
-         │         → Converts scanned images to searchable text layer
-         │         → PyMuPDF then extracts the text from all pages
-         │         → Saves processed PDF to DATA_DIR/processed_pdfs/{clean_name}_ocr.pdf
+         ├── 3. OCR/EXTRACT — ocr.py reads text + bounding boxes from every page
+         │         via PyMuPDF (no separate OCR'd file is produced or saved)
          │
          ├── 4. CHUNK — chunker.py splits the extracted text
          │         → Uses LangChain RecursiveCharacterTextSplitter
-         │         → chunk_size=600, chunk_overlap=100
+         │         → chunk_size=600, chunk_overlap=200
          │         → Each chunk carries metadata: {source: filename, chunk_index: N}
          │
-         ├── 5. EMBED — embeddings.py converts each chunk to a 768-d vector
-         │         → Model: BAAI/bge-large-en-v1.5 (runs locally on Railway)
-         │         → Stored in ChromaDB case_documents collection
-         │         → Each vector ID: {title_number}_{safe_source}_chunk_{N}
+         ├── 5. EMBED — embeddings.py converts each chunk to a 384-d vector
+         │         → Model: all-MiniLM-L6-v2 (runs locally on Railway)
+         │         → Stored in the document_chunks Postgres table (pgvector)
+         │         → Each row ID: {title_number}_{safe_source}_p{page}_c{chunk_index}_{uuid}
          │
-         ├── 6. REGISTER — database.py writes to Supabase case_documents table
-         │         → Records: title_number, doc_type, filename, file_url
+         ├── 6. UPLOAD — storage.py uploads the PDF bytes to Supabase Storage
+         │         at {title_number}/{clean_name}_ocr.pdf (private bucket)
          │
-         └── 7. RESPOND — returns JSON with success status, page count, chunk count
+         ├── 7. REGISTER — database.py writes to Supabase case_documents table
+         │         → Records: title_number, doc_type, filename, file_url (Storage path)
+         │
+         └── 8. RESPOND — returns JSON with success status, page count, chunk count,
+                   and a freshly-signed download_url for the uploaded PDF
 ```
 
 ### Filename Cleaning
 
-All filenames are cleaned before being stored on disk to avoid URL and filesystem issues:
+All filenames are cleaned before being used as a Supabase Storage key, to avoid URL and object-key issues:
 
 ```python
 def make_clean_filename(filename: str) -> str:
@@ -256,31 +257,10 @@ def make_clean_filename(filename: str) -> str:
     return cleaned
 
 # Example: "Title Register (Copy).PDF" → "Title_Register_Copy_ocr.pdf"
+# Storage key: {title_number}/Title_Register_Copy_ocr.pdf
 ```
 
----
-
-## 2.8 PDF File Serving — `/view-pdf/{filename}`
-
-Processed PDFs are served directly from disk via the `/view-pdf/{filename}` endpoint. This endpoint includes important **path traversal protection** to prevent an attacker from requesting files outside the `processed_pdfs/` directory:
-
-```python
-# SECURITY: Path Traversal Prevention
-# 1. Reject obvious attacks early (../../../.env style)
-if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
-    raise HTTPException(status_code=400, detail="Invalid filename")
-
-# 2. Resolve absolute canonical paths
-base_dir = pathlib.Path(DATA_DIR).resolve() / "processed_pdfs"
-requested_path = (base_dir / filename).resolve()
-
-# 3. Verify the resolved path is INSIDE the allowed directory
-# This catches URL-encoded tricks like %2e%2e/ that pass string checks
-if not str(requested_path).startswith(str(base_dir)):
-    raise HTTPException(status_code=400, detail="Invalid filename")
-```
-
-The response includes a `Content-Security-Policy` header that allows the PDF to be embedded in `<iframe>` tags from our Vercel frontend and localhost, but nowhere else.
+> **§2.8 used to document `/view-pdf/{filename}`**, a route that served processed PDFs directly off local disk with manual path-traversal checks. That route and the local-disk pipeline behind it have been removed — processed PDFs now live in a private Supabase Storage bucket (see `storage.py`), and the frontend loads them via a signed URL returned from `database.get_case()`. No proxy route or manual path sanitisation is needed since the frontend never sends a raw filename to the backend to fetch a PDF.
 
 ---
 
@@ -300,10 +280,10 @@ app.include_router(your_tool_router)
 ```
 
 ### `routes/formats.py` — `GET /formats/{code}`
-Fetches a single enquiry template from the ChromaDB `format_library` collection by its code. Used when a solicitor manually adds an enquiry on the Title Check review board. Tries uppercase match first, then falls back to case-sensitive match.
+Fetches a single enquiry template from the `format_library` table by its code. Used when a solicitor manually adds an enquiry on the Title Check review board. Tries uppercase match first, then falls back to case-sensitive match.
 
 ### `routes/smart_extract.py` — `POST /smart-extract`
-Takes a `title_number`, `filename`, and free-form `instructions` string. Fetches all ChromaDB chunks for that file, sorts them into reading order by `chunk_index`, concatenates the full document text, then sends it to Gemini with the user's instructions. Returns markdown-formatted extraction results.
+Takes a `title_number`, `filename`, and free-form `instructions` string. Fetches all chunks for that file (already in reading order via `embeddings.get_document_chunks`), concatenates the full document text, then sends it to Gemini with the user's instructions. Returns markdown-formatted extraction results.
 
 > **Design note:** The frontend calls this endpoint **once per file** in a sequential loop (not all files in one call). This avoids Vercel's 100-second function timeout — each individual file extraction is well under the limit.
 
@@ -322,11 +302,11 @@ This is a clever utility endpoint used by the chatbot's **InPage Ref pills** —
 
 **The solution:**
 ```
-1. Fetch all ChromaDB chunks for the document
-2. Sort chunks by chunk_index (reading order)
-3. Try exact substring match for the search phrase → if found, record chunk position
-4. If no exact match → fuzzy match using difflib.SequenceMatcher
-5. Estimate page = floor(chunk_position / CHUNKS_PER_PAGE) + 1
+1. Fetch all chunks for the document (embeddings.get_document_chunks — already
+   sorted in reading order by chunk_index)
+2. Try exact substring match for the search phrase → if found, record chunk position
+3. If no exact match → fuzzy match using difflib.SequenceMatcher
+4. Estimate page = floor(chunk_position / CHUNKS_PER_PAGE) + 1
    (CHUNKS_PER_PAGE = 5, based on ~600 chars/chunk and ~3000 chars/A4 page)
 ```
 

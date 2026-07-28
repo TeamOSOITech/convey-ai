@@ -4,7 +4,7 @@ import os
 import google.generativeai as genai
 from groq import Groq
 from dotenv import load_dotenv
-from embeddings import case_collection, format_collection, model
+from embeddings import query_case_chunks, search_formats, model
 import re
 
 load_dotenv()
@@ -62,60 +62,30 @@ def _call_groq(model_name: str, system_prompt: str, conversation: list, user_mes
 def get_current_document_context(query_embedding: list, title_number: str, current_document: str, max_chunks: int = 5) -> list:
     """Fetches chunks STRICTLY from the currently open document."""
     current_document = current_document.strip()
-    results = case_collection.query(
-        query_embeddings=query_embedding,
-        n_results=max_chunks,
-        where={
-            "$and": [
-                {"title_number": {"$eq": title_number.upper()}},
-                {"source": {"$eq": current_document}}
-            ]
-        },
-        include=["documents", "metadatas"]
+    return query_case_chunks(
+        query_embedding, title_number,
+        source=current_document,
+        n_results=max_chunks
     )
-    chunks = []
-    if results["documents"] and len(results["documents"][0]) > 0:
-        for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-            chunks.append({
-                "text": doc,
-                "metadata": meta
-            })
-    return chunks
 
 def get_diverse_context(query_embedding: list, title_number: str, max_per_doc: int = 4, total_max: int = 15, exclude_document: str = None) -> list:
     """Fetches chunks from MULTIPLE documents, excluding the open document."""
-    where_clause = {"title_number": {"$eq": title_number.upper()}}
-    if exclude_document:
-        where_clause = {
-            "$and": [
-                {"title_number": {"$eq": title_number.upper()}},
-                {"source": {"$ne": exclude_document.strip()}}
-            ]
-        }
-
-    results = case_collection.query(
-        query_embeddings=query_embedding,
-        n_results=50,
-        where=where_clause,
-        include=["documents", "metadatas"]
+    chunks = query_case_chunks(
+        query_embedding, title_number,
+        exclude_source=exclude_document.strip() if exclude_document else None,
+        n_results=50
     )
 
-    if not results["documents"] or not results["documents"][0]:
+    if not chunks:
         return []
 
-    docs = results["documents"][0]
-    metas = results["metadatas"][0]
     diverse_chunks = {}
-
-    for doc, meta in zip(docs, metas):
-        source = meta.get("source", "Unknown_Document")
+    for chunk in chunks:
+        source = chunk["metadata"].get("source", "Unknown_Document")
         if source not in diverse_chunks:
             diverse_chunks[source] = []
         if len(diverse_chunks[source]) < max_per_doc:
-            diverse_chunks[source].append({
-                "text": doc,
-                "metadata": meta
-            })
+            diverse_chunks[source].append(chunk)
 
     final_chunks = []
     for source_chunks in diverse_chunks.values():
@@ -134,10 +104,10 @@ def ask_question(
     Ask a question against a case and return citation metadata
     including page and bounding boxes for PDF highlighting.
     """
-    query_embedding = model.encode([question]).tolist()
-    
+    query_embedding = model.encode([question]).tolist()[0]
+
     # ----------------------------------------------------------
-    # Search Chroma - Context Weighted Retrieval
+    # Search the vector store - Context Weighted Retrieval
     # ----------------------------------------------------------
     current_doc_chunks = []
     other_doc_chunks = []
@@ -270,24 +240,19 @@ Remember: Extract facts. Cite every claim with [C#]. Never invent. Be precise.
 
 def raise_enquiry(issue: str, title_number: str, history: list = [], current_document: str = None) -> dict:
     """Generates case-specific enquiry text with Context-Weighted RAG."""
-    query_embedding = model.encode([issue]).tolist()
+    query_embedding = model.encode([issue]).tolist()[0]
 
     # 1. Fetch standard format wording
-    format_results = format_collection.query(
-        query_embeddings=query_embedding,
-        n_results=1,
-        include=["documents", "metadatas"]
-    )
-    
+    format_matches = search_formats(issue, n_results=1)
+
     format_context = ""
     enquiry_code, enquiry_topic = "Unknown", "Unknown"
-    
-    if format_results["documents"] and len(format_results["documents"][0]) > 0:
-        format_context = format_results["documents"][0][0]
-        if format_results["metadatas"] and len(format_results["metadatas"][0]) > 0:
-            best_match = format_results["metadatas"][0][0]
-            enquiry_code = best_match.get("code", "Unknown")
-            enquiry_topic = best_match.get("topic", "Unknown")
+
+    if format_matches:
+        best_match = format_matches[0]
+        format_context = best_match["content"]
+        enquiry_code = best_match.get("code", "Unknown")
+        enquiry_topic = best_match.get("topic", "Unknown")
 
     # 2. Fetch Facts
     current_doc_chunks = []

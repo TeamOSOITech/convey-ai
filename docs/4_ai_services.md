@@ -39,8 +39,8 @@ gemini_model = genai.GenerativeModel(flash_model_name)
 For each selected document:
 
 ```
-1. Fetch ALL ChromaDB chunks for this document
-   (uses .get() not .query() — retrieves everything, not top-N)
+1. Fetch ALL chunks for this document (embeddings.get_document_chunks —
+   a plain filtered query, not a similarity search — retrieves everything, not top-N)
 
 2. Sort chunks by chunk_index to restore reading order
 
@@ -163,9 +163,9 @@ F3b | Trigger if a new boiler or central heating system has been installed and n
 ```
 run_title_check(filename, title_number)
          │
-         ├── Step 1: resolve_pdf_path()
+         ├── Step 1: fetch_pdf_bytes()
          │         Build the cleaned OCR filename (e.g. "TA6_Form_ocr.pdf")
-         │         Check if it exists on Railway disk at DATA_DIR/processed_pdfs/
+         │         Download the bytes from Supabase Storage — returns None if missing
          │
          ├── Step 2: classify_document()
          │         Check filename keywords first (e.g. "ta6" → TA6)
@@ -173,21 +173,22 @@ run_title_check(filename, title_number)
          │         Returns: "TA6" | "TA10" | "TA13" | "CONTRACT" | "OCE" | "UNKNOWN"
          │         Used for context only — does NOT restrict which rules are checked
          │
-         ├── Step 3a (PRIMARY — PDF found): evaluate_document_vision()
-         │         pdf_to_images() → render each page at 120 DPI using PyMuPDF
+         ├── Step 3a (PRIMARY — PDF found in Storage): evaluate_document_vision()
+         │         pdf_to_images() → render each page at 120 DPI using PyMuPDF,
+         │         opening the PDF directly from the in-memory byte stream
          │         Cap at 40 pages (TA forms are typically 5-16 pages)
          │         Send [prompt_text, image1, image2, ...] to Gemini Vision
          │         Gemini reads checkboxes, signatures, dates VISUALLY
          │         Returns JSON list of triggered rules
          │
-         ├── Step 3b (FALLBACK — PDF not on disk):
-         │         Use OCR text from ChromaDB instead
+         ├── Step 3b (FALLBACK — PDF not in Storage):
+         │         Use OCR text from the vector store instead
          │         evaluate_document_text() warns Gemini about OCR checkbox limitations
          │         Less accurate for checkboxes but always available
          │
          ├── Step 4: For each triggered rule:
          │         fetch_enquiry_template(code)
-         │           → Get draft from ChromaDB format_library by exact ID: "enquiry_{CODE}"
+         │           → Get draft from format_library by exact ID: "enquiry_{CODE}"
          │           → If not found, return "[Template not found. Draft manually]"
          │
          └── Step 5: personalise_draft(template, reason, evidence)
@@ -367,7 +368,7 @@ The AI is instructed to fill in any placeholders (e.g. `(insert year)`, `(insert
 A general-purpose extraction tool. The solicitor selects any documents and writes free-form extraction instructions. The AI reads each document and returns structured markdown results.
 
 ### How it Works
-1. Fetch all ChromaDB chunks for the specified file, sort by `chunk_index`
+1. Fetch all chunks for the specified file (already sorted by `chunk_index`)
 2. Concatenate into `full_text`
 3. Build a prompt: Gemini role + extraction instructions + rules + document text
 4. Return the markdown-formatted extraction result

@@ -1,98 +1,27 @@
-# embeddings.py — converts text chunks to vectors and stores them in ChromaDB
+# embeddings.py — converts text chunks to vectors and stores/searches them
+# in Supabase Postgres via pgvector (see backend/sql/pgvector_schema.sql).
+#
+# Embedding *computation* still happens in-process (SentenceTransformer runs
+# locally); only the *index/storage* lives in Postgres now — ChromaDB and its
+# Railway-volume-backed persistence have been removed entirely.
 
-import chromadb                                    # our vector database
-from sentence_transformers import SentenceTransformer  # embedding model
-import os
+from sentence_transformers import SentenceTransformer
+from database import supabase
 import uuid
 
-# Step 1: Load the embedding model
-# This runs locally on your machine — text never leaves your computer
-# First time this runs it will download the model (~500MB) — wait for it
-"""model = SentenceTransformer(
-    "BAAI/bge-large-en-v1.5",
-    cache_folder="./models"      # saves model here permanently
-)"""
-
+# This runs locally — text never leaves the machine for embedding purposes.
+# First run downloads the model (~90MB) into ./models and caches it there.
 model = SentenceTransformer(
-    "all-MiniLM-L6-v2",   # smaller model — fits in Railway free tier
+    "all-MiniLM-L6-v2",
     cache_folder="./models"
 )
 
-# model = None  # Load on first use
 
-# def get_model():
-#     global model
-#     if model is None:
-#         model = SentenceTransformer("BAAI/bge-large-en-v1.5")
-#     return model
-# Step 2: Create a ChromaDB client
-# persist_directory means data is saved to disk, not lost when server restarts
-DATA_DIR = os.getenv("DATA_DIR", "./data")
-client = chromadb.PersistentClient(path=f"{DATA_DIR}/chroma_db")
-# Step 3: Create our 3 collections (namespaces)
-# get_or_create means it won't crash if collection already exists
+# ── Case document chunks (table: document_chunks) ────────────────────────────
 
-# Collection 1 — case documents (uploaded contract packs)
-case_collection = client.get_or_create_collection(
-    name="case_documents",
-    metadata={"description": "legal case documents uploaded by employees"}
-)
-
-
-# Collection 2 — format library (enquiry texts, TA6, TR1 language etc)
-format_collection = client.get_or_create_collection(
-    name="format_library",
-    metadata={"description": "standard UK legal format templates and enquiry texts"}
-)
-
-# Collection 3 — checklists
-checklist_collection = client.get_or_create_collection(
-    name="checklists",
-    metadata={"description": "freehold leasehold checklists and their enquiry mappings"}
-)
-
-
-# def store_case_chunks(chunks: list, title_number: str):
-#     """
-#     Takes chunks from a case document and stores them in ChromaDB
-#     title_number is used to identify which case these chunks belong to
-#     e.g. "EX332661"
-#     """
-
-#     # Step 4: Convert each chunk's text to a vector
-#     texts = [chunk["text"] for chunk in chunks]        # extract just the text
-#     embeddings = model.encode(texts).tolist()           # convert to vectors
-
-#     # Step 5: Prepare data for ChromaDB
-#     ids = []         # unique ID for each chunk
-#     metadatas = []   # metadata for each chunk
-
-#     for i, chunk in enumerate(chunks):
-#         # each chunk needs a unique ID
-#         ids.append(f"{title_number}_chunk_{i}")
-
-#         # store metadata so we can filter by title number later
-#         metadatas.append({
-#             **chunk["metadata"],          # spread existing metadata (source, chunk_index etc)
-#             "title_number": title_number  # add title number so we can filter by case
-#         })
-
-#     # Step 6: Store everything in ChromaDB
-#     case_collection.add(
-#         ids=ids,
-#         embeddings=embeddings,
-#         documents=texts,
-#         metadatas=metadatas
-#     )
-
-#     return {
-#         "stored": len(chunks),
-#         "title_number": title_number,
-#         "collection": "case_documents"
-#     }
 def store_case_chunks(chunks: list, title_number: str):
     """
-    Converts document chunks to embeddings and stores them in ChromaDB.
+    Converts document chunks to embeddings and stores them in Postgres.
 
     Each chunk already contains:
         - source
@@ -102,16 +31,11 @@ def store_case_chunks(chunks: list, title_number: str):
         - chunk_index
         - total_chunks
     """
-
-    # Convert chunk text into embeddings
     texts = [chunk["text"] for chunk in chunks]
-    embeddings = model.encode(texts).tolist()
+    vectors = model.encode(texts).tolist()
 
-    ids = []
-    metadatas = []
-
-    for chunk in chunks:
-
+    rows = []
+    for chunk, vector in zip(chunks, vectors):
         metadata = chunk["metadata"]
 
         safe_source = (
@@ -121,60 +45,151 @@ def store_case_chunks(chunks: list, title_number: str):
             .replace("\\", "_")
         )
 
-        page = metadata["page"]
-        chunk_index = metadata["chunk_index"]
-
-        ids.append(
-            f"{title_number}_{safe_source}_p{page}_c{chunk_index}_{uuid.uuid4().hex[:8]}"
+        row_id = (
+            f"{title_number}_{safe_source}_p{metadata['page']}_"
+            f"c{metadata['chunk_index']}_{uuid.uuid4().hex[:8]}"
         )
 
-        # Store only metadata here.
-        # The chunk text itself is already stored in the `documents` field.
-        metadatas.append(metadata)
+        rows.append({
+            "id": row_id,
+            "title_number": title_number,
+            "source": metadata["source"],
+            "page": metadata.get("page"),
+            "chunk_index": metadata.get("chunk_index"),
+            "total_chunks": metadata.get("total_chunks"),
+            "bbox": metadata.get("bbox"),
+            "content": chunk["text"],
+            "embedding": vector,
+        })
 
-    case_collection.add(
-        ids=ids,
-        embeddings=embeddings,
-        documents=texts,
-        metadatas=metadatas
-    )
+    supabase.table("document_chunks").insert(rows).execute()
 
     return {
-        "stored": len(chunks),
+        "stored": len(rows),
         "title_number": title_number,
-        "collection": "case_documents"
+        "collection": "document_chunks"
     }
 
-def search_case(query: str, title_number: str, n_results: int = 5):
+
+def _row_to_chunk(row: dict) -> dict:
+    """Shapes a document_chunks row into the {text, metadata} form callers expect."""
+    return {
+        "text": row["content"],
+        "metadata": {
+            "source": row["source"],
+            "title_number": row["title_number"],
+            "page": row["page"],
+            "bbox": row["bbox"],
+            "chunk_index": row["chunk_index"],
+            "total_chunks": row["total_chunks"],
+        }
+    }
+
+
+def query_case_chunks(
+    query_embedding: list,
+    title_number: str,
+    source: str = None,
+    exclude_source: str = None,
+    n_results: int = 10
+) -> list:
     """
-    Searches for relevant chunks in a specific case
-    Returns the top n most relevant chunks
+    Vector similarity search over a case's chunks via the match_document_chunks
+    RPC. Optionally scoped to one document (source) or excluding one
+    (exclude_source) — used for the chatbot's current-doc-first retrieval.
     """
+    result = supabase.rpc("match_document_chunks", {
+        "query_embedding": query_embedding,
+        "match_title_number": title_number.upper(),
+        "match_source": source,
+        "exclude_source": exclude_source,
+        "match_count": n_results,
+    }).execute()
 
-    # Step 7: Convert the search query to a vector
-    query_embedding = model.encode([query]).tolist()
+    return [_row_to_chunk(row) for row in result.data]
 
-    # Step 8: Search ChromaDB for similar vectors
-    # where filter means only search within this specific case
-    results = case_collection.query(
-        query_embeddings=query_embedding,
-        n_results=n_results,
-        where={"title_number": title_number}   # only search this case
-    )
 
-    return results
-
-def search_formats(query: str, n_results: int = 3):
+def get_document_chunks(title_number: str, source: str) -> list:
     """
-    Searches format library for relevant enquiry texts
+    Fetches every chunk for one document, already in reading order.
+    Replaces the old "get() everything then sort by chunk_index" pattern.
     """
-    # Convert query to vector
-    query_embedding = model.encode([query]).tolist()
+    result = supabase.table("document_chunks")\
+        .select("*")\
+        .eq("title_number", title_number.upper())\
+        .eq("source", source)\
+        .order("chunk_index")\
+        .execute()
 
-    # Search format_library collection
-    results = format_collection.query(
-        query_embeddings=query_embedding,
-        n_results=n_results
-    )
+    return [_row_to_chunk(row) for row in result.data]
 
-    return results
+
+def delete_case_chunks(title_number: str, source: str):
+    """Deletes every chunk belonging to one document."""
+    supabase.table("document_chunks")\
+        .delete()\
+        .eq("title_number", title_number.upper())\
+        .eq("source", source)\
+        .execute()
+
+
+# ── Format library (table: format_library) ───────────────────────────────────
+
+def store_format_entries(entries: list):
+    """
+    Wipes and rebuilds the format_library table from a list of
+    {code, section, topic, trigger, text} dicts — see ingest_formats.py.
+    """
+    texts_to_embed = [
+        f"Code: {e['code']}. Section: {e['section']}. Topic: {e['topic']}. "
+        f"When to use: {e['trigger']}. Enquiry text: {e['text']}"
+        for e in entries
+    ]
+    vectors = model.encode(texts_to_embed).tolist()
+
+    rows = [
+        {
+            "id": f"enquiry_{e['code']}",
+            "code": e["code"],
+            "section": e["section"],
+            "topic": e["topic"],
+            "trigger_text": e["trigger"],
+            "content": e["text"],
+            "embedding": vector,
+        }
+        for e, vector in zip(entries, vectors)
+    ]
+
+    # True wipe-and-rebuild — /reingest-formats has always claimed this happens.
+    supabase.table("format_library").delete().neq("id", "").execute()
+    supabase.table("format_library").insert(rows).execute()
+
+    return len(rows)
+
+
+def search_formats(query: str, n_results: int = 3) -> list:
+    """Semantic search over the format library — returns raw rows with a similarity score."""
+    query_embedding = model.encode([query]).tolist()[0]
+    result = supabase.rpc("match_format_library", {
+        "query_embedding": query_embedding,
+        "match_count": n_results,
+    }).execute()
+    return result.data
+
+
+def get_enquiry_template(code: str) -> dict:
+    """Deterministic lookup by enquiry code — no vector search."""
+    result = supabase.table("format_library").select("*").eq("id", f"enquiry_{code}").execute()
+    if not result.data:
+        return None
+    return result.data[0]
+
+
+def get_format_by_code(code: str) -> dict:
+    """Case-insensitive lookup by code, tries uppercase first then exact match."""
+    result = supabase.table("format_library").select("*").eq("code", code.upper()).execute()
+    if not result.data:
+        result = supabase.table("format_library").select("*").eq("code", code).execute()
+    if not result.data:
+        return None
+    return result.data[0]

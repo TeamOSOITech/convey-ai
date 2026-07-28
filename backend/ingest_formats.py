@@ -1,8 +1,7 @@
-# ingest_formats.py — run this ONCE to feed all enquiry texts into ChromaDB[cite: 1]
+# ingest_formats.py — run this ONCE to feed all enquiry texts into the format_library table[cite: 1]
 # This is not part of the web server, just a standalone script[cite: 1]
 
-import json
-from embeddings import model, format_collection
+from embeddings import store_format_entries
 
 # Step 1: Define all enquiries with code, topic and text[cite: 1]
 # This is structured from the Freehold Title Check Enquiries document[cite: 1, 2]
@@ -533,48 +532,17 @@ enquiries = [
     }
 ]
 
-def ingest_all_enquiries():
+def ingest_all_enquiries() -> int:
     """
-    Converts all enquiry texts to vectors and stores in ChromaDB format_library collection[cite: 1]
-    Run this script once — or whenever you add new enquiry formats[cite: 1]
+    Converts all enquiry texts to vectors and wipes-and-rebuilds the
+    format_library table with them. Run this script once — or whenever
+    you add new enquiry formats. Returns the number of enquiries stored.
     """
-
     print(f"Ingesting {len(enquiries)} enquiries into format library...")
-
-    # Step 2: Build text to embed — combine all fields for richer search[cite: 1]
-    # We embed a combination of topic + trigger + text[cite: 1]
-    # so the AI can find the right enquiry by any of these[cite: 1]
-    texts_to_embed = []
-    for e in enquiries:
-        combined = f"Code: {e['code']}. Section: {e['section']}. Topic: {e['topic']}. When to use: {e['trigger']}. Enquiry text: {e['text']}"
-        texts_to_embed.append(combined)
-
-    # Step 3: Generate embeddings[cite: 1]
-    print("Generating embeddings...")
-    embeddings = model.encode(texts_to_embed).tolist()
-
-    # Step 4: Store in ChromaDB[cite: 1]
-    ids = [f"enquiry_{e['code']}" for e in enquiries]
-    metadatas = [
-        {
-            "code": e["code"],
-            "section": e["section"],
-            "topic": e["topic"],
-            "trigger": e["trigger"]
-        }
-        for e in enquiries
-    ]
-    documents = [e["text"] for e in enquiries]   # store just the text for retrieval[cite: 1]
-
-    format_collection.add(
-        ids=ids,
-        embeddings=embeddings,
-        documents=documents,
-        metadatas=metadatas
-    )
-
-    print(f"Done! {len(enquiries)} enquiries stored in format_library collection.")
+    count = store_format_entries(enquiries)
+    print(f"Done! {count} enquiries stored in format_library.")
     print("Enquiry codes stored:", [e["code"] for e in enquiries])
+    return count
 
 if __name__ == "__main__":
     ingest_all_enquiries()

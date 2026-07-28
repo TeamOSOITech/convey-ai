@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List
-from embeddings import case_collection
+from embeddings import get_document_chunks
 from auth_utils import require_auth
 
 router = APIRouter()
@@ -77,21 +77,12 @@ async def form_extract_route(req: FormExtractRequest, _user=Depends(require_auth
         # Gather text from ALL selected files
         all_text_parts = []
         for filename in req.filenames:
-            results = case_collection.get(
-                where={
-                    "$and": [
-                        {"title_number": {"$eq": tn}},
-                        {"source":       {"$eq": filename}}
-                    ]
-                }
-            )
-            if not results["ids"]:
+            chunks = get_document_chunks(tn, filename)
+            if not chunks:
                 all_text_parts.append(f"[[ {filename} — no content found in database ]]")
                 continue
 
-            chunks_with_meta = list(zip(results["documents"], results["metadatas"]))
-            chunks_with_meta.sort(key=lambda x: x[1].get("chunk_index", 0))
-            doc_text = "\n\n".join([chunk for chunk, _ in chunks_with_meta])
+            doc_text = "\n\n".join(c["text"] for c in chunks)
             all_text_parts.append(f"=== DOCUMENT: {filename} ===\n\n{doc_text}")
 
         if not all_text_parts:

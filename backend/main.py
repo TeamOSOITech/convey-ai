@@ -4,9 +4,12 @@ from fastapi import FastAPI, UploadFile, File, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from ocr import process_pdf
 from chunker import chunk_page
-from embeddings import store_case_chunks, search_formats, case_collection
+from embeddings import (
+    store_case_chunks, search_formats, get_document_chunks,
+    delete_case_chunks, query_case_chunks
+)
 from chatbot import ask_question, raise_enquiry
-from database import create_case, add_document, get_case, get_all_cases, delete_document
+from database import create_case, add_document, get_case, get_all_cases, delete_document, supabase
 import storage
 import os
 from pydantic import BaseModel
@@ -18,13 +21,6 @@ from fastapi.responses import JSONResponse
 from title_report import generate_title_report
 from title_check import run_title_check
 from auth_utils import require_auth
-
-
-# Set data directory — uses /app/data on Railway, ./data locally
-# Only chroma_db (the vector store) still lives on local/volume disk —
-# processed PDFs live in Supabase Storage, see storage.py.
-DATA_DIR = os.getenv("DATA_DIR", "./data")
-os.makedirs(f"{DATA_DIR}/chroma_db", exist_ok=True)
 
 app = FastAPI()
 
@@ -74,7 +70,7 @@ def make_clean_filename(filename: str) -> str:
 
 @app.post("/ingest-formats")
 async def ingest_formats_route():
-    """One-time route to populate format library in ChromaDB — delete after use"""
+    """One-time route to populate the format_library table — delete after use"""
     # No title_number here — removed the erroneous .upper() call
     from ingest_formats import ingest_all_enquiries
     ingest_all_enquiries()
@@ -103,7 +99,7 @@ async def upload_zip(
     Receives a contract pack ZIP,
     OCRs every PDF,
     chunks every page,
-    stores everything in ChromaDB.
+    embeds and stores every chunk in the vector store.
     """
 
     title_number = title_number.upper()
@@ -278,7 +274,7 @@ class TitleReportRequest(BaseModel):
 @app.post("/chat")
 async def chat(title_number: str, request: ChatRequest, _user=Depends(require_auth)):
     """General Q&A prioritizing the current document"""
-    # Normalise title number to uppercase so ChromaDB where-filter matches stored metadata
+    # Normalise title number to uppercase so the vector-store filter matches stored metadata
     result = ask_question(
         request.question,
         title_number.upper(),  # inline .upper() avoids Python UnboundLocalError
@@ -296,18 +292,23 @@ async def search_formats_route(query: str):
         "query": query,
         "matches": [
             {
-                "text": results["documents"][0][i],
-                "metadata": results["metadatas"][0][i],
+                "text": row["content"],
+                "metadata": {
+                    "code": row["code"],
+                    "section": row["section"],
+                    "topic": row["topic"],
+                    "trigger": row["trigger_text"]
+                },
                 "relevance_rank": i + 1
             }
-            for i in range(len(results["documents"][0]))
+            for i, row in enumerate(results)
         ]
     }
 
 @app.post("/raise-enquiry")
 async def raise_enquiry_route(title_number: str, request: EnquiryRequest, _user=Depends(require_auth)):
     """Raises enquiry with conversation memory, prioritizing current document"""
-    # Normalise title number to uppercase so ChromaDB where-filter matches stored metadata
+    # Normalise title number to uppercase so the vector-store filter matches stored metadata
     result = raise_enquiry(
         request.issue,
         title_number.upper(),  # inline .upper() avoids Python UnboundLocalError
@@ -339,7 +340,7 @@ async def get_case_route(title_number: str, _user=Depends(require_auth)):
 @app.delete("/cases/{title_number}/documents/{document_id}")
 async def delete_document_route(title_number: str, document_id: str, _user=Depends(require_auth)):
     """
-    Deletes a document completely from Supabase, Storage, and ChromaDB.
+    Deletes a document completely from Supabase (row, Storage object, and vector chunks).
     """
     tn = title_number.upper()
 
@@ -354,20 +355,12 @@ async def delete_document_route(title_number: str, document_id: str, _user=Depen
     cleaned = make_clean_filename(original_filename)
     storage.delete_document(f"{tn}/{cleaned}")
 
-    # Step 3: Delete ONLY this document's chunks from ChromaDB
+    # Step 3: Delete ONLY this document's chunks from the vector store
     try:
-        # Pass the strict $eq syntax directly to the delete command
-        case_collection.delete(
-            where={
-                "$and": [
-                    {"title_number": {"$eq": tn}},
-                    {"source": {"$eq": original_filename}} 
-                ]
-            }
-        )
-        print(f"Successfully deleted ChromaDB chunks for: {original_filename}")
+        delete_case_chunks(tn, original_filename)
+        print(f"Successfully deleted vector chunks for: {original_filename}")
     except Exception as e:
-        print(f"ChromaDB cleanup error: {e}")
+        print(f"Vector store cleanup error: {e}")
 
     return {"success": True, "message": f"Document '{original_filename}' deleted completely"}
 
@@ -379,51 +372,16 @@ async def debug_chunks(title_number: str):
     """
     if not DEV_MODE:
         raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production")
-    results = case_collection.get(
-        where={"title_number": title_number.upper()},
-        limit=5
-    )
+    result = supabase.table("document_chunks")\
+        .select("id, title_number, source, page, chunk_index")\
+        .eq("title_number", title_number.upper())\
+        .limit(5)\
+        .execute()
     return {
-        "ids": results["ids"],
-        "metadatas": results["metadatas"]
+        "ids": [row["id"] for row in result.data],
+        "metadatas": result.data
     }
 
-# @app.get("/debug-query/{title_number}")
-# async def debug_query(title_number: str, question: str, current_document: str = None):
-#     """
-#     Temporary debug — shows exactly what chunks the chatbot would retrieve
-#     for a given question and open document
-#     """
-#     from embeddings import model
-    
-#     query_embedding = model.encode([question]).tolist()
-#     tn = title_number.upper()
-    
-#     # What it finds in the current doc
-#     current_results = {"documents": [[]], "metadatas": [[]]}
-#     if current_document:
-#         current_results = case_collection.query(
-#             query_embeddings=query_embedding,
-#             n_results=3,
-#             where={"$and": [
-#                 {"title_number": tn},
-#                 {"source": current_document}
-#             ]}
-#         )
-    
-#     # What it finds in other docs
-#     other_results = case_collection.query(
-#         query_embeddings=query_embedding,
-#         n_results=3,
-#         where={"title_number": tn}
-#     )
-    
-#     return {
-#         "title_number_queried": tn,
-#         "current_document_filter": current_document,
-#         "current_doc_chunks": current_results["documents"][0],
-#         "other_chunks": other_results["documents"][0]
-#     }
 @app.get("/debug-query/{title_number}")
 async def debug_query(title_number: str, question: str, current_document: str = None):
     """
@@ -433,65 +391,42 @@ async def debug_query(title_number: str, question: str, current_document: str = 
     if not DEV_MODE:
         raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production")
     from embeddings import model
-    
+
     query_embedding = model.encode([question]).tolist()
     tn = title_number.upper()
-    
+
     # What it finds in the current doc
-    current_results = {"documents": [[]], "metadatas": [[]]}
+    current_chunks = []
     if current_document:
         current_document = current_document.strip()
-        current_results = case_collection.query(
-            query_embeddings=query_embedding,
-            n_results=3,
-            where={
-                "$and": [
-                    {"title_number": {"$eq": tn}},
-                    {"source": {"$eq": current_document}}
-                ]
-            }
-        )
-    
-    # FIX: Explicitly exclude the current document from the fallback query
-    if current_document:
-        other_where = {
-            "$and": [
-                {"title_number": {"$eq": tn}},
-                {"source": {"$ne": current_document}} # Excludes the active doc
-            ]
-        }
-    else:
-        other_where = {"title_number": tn}
-        
-    other_results = case_collection.query(
-        query_embeddings=query_embedding,
-        n_results=3,
-        where=other_where
+        current_chunks = query_case_chunks(query_embedding, tn, source=current_document, n_results=3)
+
+    # What it finds in other docs — explicitly excludes the active doc
+    other_chunks = query_case_chunks(
+        query_embedding, tn,
+        exclude_source=current_document.strip() if current_document else None,
+        n_results=3
     )
-    
-    # Safely extract documents and metadatas
-    c_docs = current_results["documents"][0] if current_results.get("documents") else []
-    c_meta = current_results["metadatas"][0] if current_results.get("metadatas") else []
-    o_docs = other_results["documents"][0] if other_results.get("documents") else []
-    o_meta = other_results["metadatas"][0] if other_results.get("metadatas") else []
-    
+
     return {
         "title_number_queried": tn,
         "current_document_filter": current_document,
-        "current_doc_chunks": c_docs,
-        "current_doc_metadatas": c_meta, # Look here to verify your keys!
-        "other_chunks": o_docs,
-        "other_metadatas": o_meta
+        "current_doc_chunks": [c["text"] for c in current_chunks],
+        "current_doc_metadatas": [c["metadata"] for c in current_chunks],
+        "other_chunks": [c["text"] for c in other_chunks],
+        "other_metadatas": [c["metadata"] for c in other_chunks]
     }
+
 @app.get("/debug-sources/{title_number}")
 async def debug_sources(title_number: str):
     """Debug route — gated behind DEV_MODE env var. Set DEV_MODE=true locally."""
     if not DEV_MODE:
         raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production")
-    results = case_collection.get(
-        where={"title_number": title_number.upper()}
-    )
-    sources = list(set(m["source"] for m in results["metadatas"]))
+    result = supabase.table("document_chunks")\
+        .select("source")\
+        .eq("title_number", title_number.upper())\
+        .execute()
+    sources = list(set(row["source"] for row in result.data))
     return {"title_number": title_number.upper(), "sources": sources}
 
 
@@ -508,7 +443,7 @@ async def find_page(title_number: str, filename: str, query: str):
     supports #page=N but NOT #search=text, so we convert the phrase to a page.
 
     Strategy:
-      1. Fetch all chunks for this document from ChromaDB, sorted by chunk_index
+      1. Fetch all chunks for this document, already sorted by chunk_index
       2. Try exact substring match first (fast, works when OCR is clean)
       3. Fall back to difflib fuzzy ratio if no exact match found
       4. Estimate page = floor(best_chunk_index / CHUNKS_PER_PAGE) + 1
@@ -522,24 +457,14 @@ async def find_page(title_number: str, filename: str, query: str):
 
     tn = title_number.upper()
 
-    # Fetch every chunk for this specific document
-    results = case_collection.get(
-        where={
-            "$and": [
-                {"title_number": {"$eq": tn}},
-                {"source":       {"$eq": filename}}
-            ]
-        },
-        include=["documents", "metadatas"]
-    )
+    # Fetch every chunk for this specific document, already in reading order
+    chunks_with_meta = [
+        (c["text"], c["metadata"]) for c in get_document_chunks(tn, filename)
+    ]
 
     # If nothing found, default to page 1 gracefully
-    if not results["ids"]:
+    if not chunks_with_meta:
         return {"page": 1, "found": False, "reason": "no chunks found for document"}
-
-    # Sort chunks into document reading order
-    chunks_with_meta = list(zip(results["documents"], results["metadatas"]))
-    chunks_with_meta.sort(key=lambda x: x[1].get("chunk_index", 0))
 
     query_lower = query.lower()
     best_score  = 0.0
@@ -604,7 +529,7 @@ async def generate_title_report_route(title_number: str, request: TitleReportReq
 
 @app.post("/ingest-letters")
 async def ingest_letters_route():
-    """One-time route to ingest letter templates into ChromaDB"""
+    """One-time route to ingest letter templates into the vector store"""
     from ingest_letters import ingest_all_letters
     ingest_all_letters()
     return {"success": True, "message": "Letter templates ingested"}
@@ -613,16 +538,16 @@ async def ingest_letters_route():
 # ── Title Check endpoint ──────────────────────────────────────────────────────
 # Runs the AI-assisted Title Check pipeline on a single uploaded TA6/TA10/TA13.
 # Steps performed (see title_check.py for detail):
-#   1. Reconstructs full document text from ChromaDB chunks
+#   1. Reconstructs full document text from the vector store's chunks
 #   2. Classifies form type (TA6 / TA10 / TA13)
 #   3. Gemini extracts checkbox states and seller notes as structured JSON
 #   4. Hardcoded Rules Engine maps states → enquiry codes (no LLM here)
-#   5. Fetches enquiry templates from format_library ChromaDB collection
+#   5. Fetches enquiry templates from the format_library table
 #   6. Gemini personalises drafts where templates have placeholders
 # Returns findings list for the human Review Board in the frontend.
 class TitleCheckRequest(BaseModel):
     title_number: str   # e.g. "EX332661"
-    filename:     str   # exact filename as stored in ChromaDB
+    filename:     str   # exact filename as stored in the vector store
 
 @app.post("/title-check")
 async def title_check_route(req: TitleCheckRequest, _user=Depends(require_auth)):
@@ -649,21 +574,19 @@ async def title_check_route(req: TitleCheckRequest, _user=Depends(require_auth))
 
 
 # ── Re-ingest formats endpoint ────────────────────────────────────────────────
-# Use this to rebuild the format_library ChromaDB collection on Railway
+# Use this to rebuild the format_library table on Railway
 # after adding new enquiry formats to ingest_formats.py.
 # Hit: POST /reingest-formats  (no body needed)
 @app.post("/reingest-formats")
 async def reingest_formats_route():
     """
-    Wipes and rebuilds the format_library ChromaDB collection from ingest_formats.py.
+    Wipes and rebuilds the format_library table from ingest_formats.py.
     Call this after deploying new enquiry formats to Railway so templates are available
     for the Title Check and chatbot raise-enquiry features.
     """
     try:
         from ingest_formats import ingest_all_enquiries
-        ingest_all_enquiries()
-        from embeddings import format_collection
-        count = format_collection.count()
+        count = ingest_all_enquiries()
         return {"success": True, "message": f"Format library rebuilt. {count} enquiries now stored."}
     except Exception as e:
         print(f"[/reingest-formats] Error: {e}")

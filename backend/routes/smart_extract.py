@@ -7,7 +7,7 @@
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from embeddings import case_collection
+from embeddings import get_document_chunks
 from auth_utils import require_auth
 
 router = APIRouter()
@@ -15,7 +15,7 @@ router = APIRouter()
 
 class SmartExtractRequest(BaseModel):
     title_number: str   # e.g. "EX332661"
-    filename:     str   # exact filename as stored in ChromaDB
+    filename:     str   # exact filename as stored in the vector store
     instructions: str   # user's free-form extraction rules
 
 
@@ -23,7 +23,7 @@ class SmartExtractRequest(BaseModel):
 async def smart_extract_route(req: SmartExtractRequest, _user=Depends(require_auth)):
     """
     Runs a user-defined extraction prompt over a single document.
-    Fetches all ChromaDB chunks for the file, concatenates them into full_text,
+    Fetches all chunks for the file, concatenates them into full_text,
     then asks Gemini to extract whatever the user's instructions describe.
     Returns { filename, result } where result is markdown-formatted output.
     """
@@ -32,26 +32,16 @@ async def smart_extract_route(req: SmartExtractRequest, _user=Depends(require_au
 
         tn = req.title_number.upper()
 
-        # Fetch every chunk for this specific file
-        results = case_collection.get(
-            where={
-                "$and": [
-                    {"title_number": {"$eq": tn}},
-                    {"source":       {"$eq": req.filename}}
-                ]
-            }
-        )
+        # Fetch every chunk for this specific file, already in reading order
+        chunks = get_document_chunks(tn, req.filename)
 
-        if not results["ids"]:
+        if not chunks:
             return JSONResponse(
                 status_code=404,
                 content={"detail": f"No content found for '{req.filename}' in case {tn}. Has this document been uploaded and ingested?"}
             )
 
-        # Sort chunks by chunk_index so the text is in reading order
-        chunks_with_meta = list(zip(results["documents"], results["metadatas"]))
-        chunks_with_meta.sort(key=lambda x: x[1].get("chunk_index", 0))
-        full_text = "\n\n".join([chunk for chunk, _ in chunks_with_meta])
+        full_text = "\n\n".join(c["text"] for c in chunks)
 
         prompt = f"""You are a highly experienced UK legal assistant.
 You have been given one legal document and a set of extraction instructions.

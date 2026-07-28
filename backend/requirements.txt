@@ -5,7 +5,6 @@ pymupdf
 python-multipart
 langchain
 langchain-text-splitters
-chromadb
 sentence-transformers
 
 

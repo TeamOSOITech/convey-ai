@@ -26,7 +26,8 @@ The original security audit ran on 2026-06-23. The table below shows every issue
 | **F3** | No JWT sent to backend in API calls | `lib/api.js` (`apiFetch`) created — automatically attaches `Authorization: Bearer <token>` to every request |
 | **F6** | `fetchCases()` fired before auth resolved | `useEffect([user])` dependency added in `app/page.js` |
 | **F9** | No security headers | `next.config.mjs` now includes `X-Frame-Options`, `X-Content-Type-Options`, `Strict-Transport-Security`, `Referrer-Policy`, `Permissions-Policy`, and `Content-Security-Policy-Report-Only` |
-| **B3** | Path traversal on `/view-pdf/{filename}` | `pathlib.Path.resolve()` + prefix check added in `main.py` — `..` and absolute paths are blocked |
+| **B3** | Path traversal on `/view-pdf/{filename}` | Moot — the route itself was deleted. Processed PDFs moved to a private Supabase Storage bucket; the frontend loads a signed URL from `database.get_case()` instead of asking the backend to resolve a filename on disk. |
+| **B4** | Path traversal in `title_check.py`'s `resolve_pdf_path()` | Moot — that function is gone. `title_check.py` now calls `storage.fetch_document_bytes()`, which downloads by a `{title_number}/{filename}` Storage key rather than resolving a filesystem path, so there's no local path to traverse. |
 
 ---
 
@@ -61,10 +62,10 @@ These are the highest-priority items. They put live client legal data at risk ri
 
 These endpoints are open to anyone on the internet:
 ```
-POST /ingest-formats   → rebuilds ChromaDB format library
+POST /ingest-formats   → rebuilds the format_library table
 POST /reingest-formats → WIPES all enquiry templates
 POST /ingest-letters   → wipes letter template library
-GET  /debug-chunks/{title_number}  → returns ChromaDB chunks (client document text)
+GET  /debug-chunks/{title_number}  → returns document_chunks rows (client document text)
 GET  /debug-query/{title_number}   → returns actual text from client legal documents
 GET  /debug-sources/{title_number} → returns all filenames for any case
 ```
@@ -80,25 +81,6 @@ Any person who guesses a UK title number (format: 2 letters + 6 digits, predicta
       if x_admin_token != os.getenv("ADMIN_SECRET"):
           raise HTTPException(status_code=403)
   ```
-
----
-
-#### B4 — Path Traversal in `title_check.py`
-
-**File:** `backend/title_check.py` — `resolve_pdf_path()` (lines 86-100)
-
-The fix applied to `/view-pdf/` in `main.py` was NOT applied here. The `filename` from the `/title-check` POST body flows directly into `os.path.join()` without canonicalisation. A filename of `../../.env` passes through the cleanup and PyMuPDF attempts to open it.
-
-**What to do:** Apply the same `pathlib` canonicalisation:
-```python
-def resolve_pdf_path(filename: str) -> str:
-    cleaned = filename.replace(" ", "_").replace(",", "").replace("(", "").replace(")", "")
-    base_dir = pathlib.Path(DATA_DIR).resolve() / "processed_pdfs"
-    requested = (base_dir / cleaned).resolve()
-    if not str(requested).startswith(str(base_dir)):
-        return None
-    return str(requested) if requested.exists() else None
-```
 
 ---
 
@@ -208,7 +190,7 @@ The login page calls `supabase.auth.signInWithPassword()` with no attempt counte
 |---|---|---|
 | **B6** | Prompt injection via user-controlled input to LLM | Sanitise all user input before interpolating into prompts. Never inject `filename` (user-controlled) directly into system prompts |
 | **B11** | Chat history role injection | Validate `role` is only `"user"` or `"assistant"` before passing to LLM |
-| **B12** | No `title_number` format validation | Add regex check `^[A-Z]{2}[0-9]{1,8}$` before using in any DB/ChromaDB query |
+| **B12** | No `title_number` format validation | Add regex check `^[A-Z]{2}[0-9]{1,8}$` before using in any Postgres/Storage query |
 | **B13** | Raw Python exception details sent to client | Log full error server-side, return `{"detail": "An error occurred"}` to client |
 | **B14** | Unpinned Python dependencies | Run `pip freeze > requirements.txt` to lock all versions |
 | **B15** | CORS regex matches ALL `*.vercel.app` subdomains | Replace regex with explicit list `allow_origins=["https://convey-ai.vercel.app"]` |
@@ -252,7 +234,7 @@ These are planned product features not yet implemented, in priority order.
 
 **What's needed:**
 - `backend/routes/letter_generator.py` — define letter types and their prompts
-- Seed letter templates into ChromaDB (`ingest_letters.py` already partially exists)
+- Seed letter templates into a pgvector table, following the `format_library` pattern (`ingest_letters.py` is referenced by `/ingest-letters` in `main.py` but doesn't exist yet as a file)
 - Frontend: `app/case/[titleNumber]/letters/page.js` — letter type selector + generated output
 - Same pattern as Smart Extract but with fixed letter structures
 
@@ -319,17 +301,17 @@ These are planned product features not yet implemented, in priority order.
 
 **What's needed:**
 - A "Replace" button per document on the case dashboard
-- Backend: delete old ChromaDB chunks + Supabase record + disk file, then process new file
+- Backend: delete old document_chunks rows + Supabase record + Storage object, then process new file
 - Wraps the existing delete + upload pipeline
 
 ---
 
 #### 8. Bulk Download / Export
 **Status:** Not implemented  
-**What it is:** Download all OCR'd PDFs for a case as a ZIP, or export the title report as a formatted PDF.
+**What it is:** Download all processed PDFs for a case as a ZIP, or export the title report as a formatted PDF.
 
 **What's needed:**
-- Backend: `GET /cases/{title_number}/export` — zip all `processed_pdfs` for the case
+- Backend: `GET /cases/{title_number}/export` — download every document from Supabase Storage for the case and zip them
 - Frontend: Download button on the Case Dashboard
 - Optional: `reportlab` or `weasyprint` for PDF export of the title report
 

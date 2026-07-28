@@ -665,7 +665,7 @@
 import os
 import google.generativeai as genai
 from dotenv import load_dotenv
-from embeddings import case_collection
+from embeddings import get_document_chunks
 
 load_dotenv()
 
@@ -833,12 +833,9 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
 
     for filename in selected_filenames:
         filename = filename.strip()
-        results = case_collection.get(
-            where={"$and": [{"title_number": {"$eq": title_number}}, {"source": {"$eq": filename}}]},
-            include=["documents", "metadatas"]
-        )
+        chunks = get_document_chunks(title_number, filename)
 
-        if not results["ids"]:
+        if not chunks:
             report_documents.append({
                 "filename": filename,
                 "is_oce": is_oce_document(filename),
@@ -847,11 +844,8 @@ def generate_title_report(title_number: str, selected_filenames: list) -> dict:
             })
             continue
 
-        chunks_with_meta = list(zip(results["documents"], results["metadatas"]))
-        chunks_with_meta.sort(key=lambda x: x[1].get("chunk_index", 0))
-        
         # Combine all chunks into one massive string
-        full_text = "\n\n".join([chunk for chunk, _ in chunks_with_meta])
+        full_text = "\n\n".join(c["text"] for c in chunks)
 
         is_oce = is_oce_document(filename)
         date = extract_date(full_text, filename, is_oce=is_oce)

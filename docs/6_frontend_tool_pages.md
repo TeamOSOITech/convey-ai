@@ -60,7 +60,7 @@ The middle panel renders the processed OCR'd PDF inside a native browser `<ifram
 
 ### Source Document Pills (Blue)
 
-When the AI answers a question, the response includes a `sources` array of filenames that were actually retrieved from ChromaDB. Each filename renders as a blue pill button below the answer. Clicking a pill calls `openSourceDocument(filename)`, which:
+When the AI answers a question, the response includes a `sources` array of filenames that were actually retrieved from the vector store. Each filename renders as a blue pill button below the answer. Clicking a pill calls `openSourceDocument(filename)`, which:
 - Finds the matching document object in `caseData.documents`
 - Sets it as `selectedDoc` (swaps the PDF in the middle panel)
 - Sets `pdfPage` to null (opens from page 1)
@@ -70,7 +70,7 @@ When the AI answers a question, the response includes a `sources` array of filen
 The AI may also return a `citations` array of `{source, ref}` objects. Each renders as a purple pill. Clicking one calls `openCitation(filename, ref)`, which:
 1. Immediately swaps the PDF viewer to the source document
 2. Calls `GET /find-page?title_number=...&filename=...&query=...`
-3. Backend fuzzy-searches ChromaDB chunks for the phrase and returns an estimated page number
+3. Backend fuzzy-searches the document's chunks for the phrase and returns an estimated page number
 4. Sets `pdfPage` to that number — the iframe remounts with `#page=N`
 
 ### Message Types
@@ -213,7 +213,7 @@ const updateEditedDraft = (index, text) => {
 
 ### Manual Enquiry Addition
 
-On the Review Board, there is an "Add Enquiry" box where a solicitor can type any enquiry code (e.g. `A1`, `F3b`) and click Add. This calls `GET /formats/{code}` which fetches the standard template from ChromaDB. A new finding card is appended to the board with `status: 'pending'` and `reason: "Manually added by user."` — the solicitor can then edit the draft before approving.
+On the Review Board, there is an "Add Enquiry" box where a solicitor can type any enquiry code (e.g. `A1`, `F3b`) and click Add. This calls `GET /formats/{code}` which fetches the standard template from the format_library table. A new finding card is appended to the board with `status: 'pending'` and `reason: "Manually added by user."` — the solicitor can then edit the draft before approving.
 
 ### Generate Phase
 
@@ -317,7 +317,7 @@ The **← New Extraction** button resets `phase` to `'setup'` and clears results
 
 ### Three Distinct Roles for Each Panel
 
-**Left panel — Source Documents:** The solicitor checks which case documents to use as source material (the Lease, Transfer, OCE etc.). These are the documents ChromaDB will search to fill in the form.
+**Left panel — Source Documents:** The solicitor checks which case documents to use as source material (the Lease, Transfer, OCE etc.). These are the documents the backend will pull chunk text from to fill in the form.
 
 **Middle panel — Blank Form Viewer:** The solicitor drags and drops (or clicks to select) their blank TR1 form PDF from their local PC. This loads into an iframe using a `blob:` URL — the form never leaves the browser, it's only used so the solicitor can visually reference the panel numbers while reading the extracted data.
 

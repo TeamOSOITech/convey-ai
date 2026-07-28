@@ -47,27 +47,31 @@ The system is split into two completely separate applications that communicate v
 │   ┌──────────────────┐  ┌──────────────────┐  ┌─────────────────┐  │
 │   │  main.py (API)   │  │  AI Services     │  │  Route Modules  │  │
 │   └──────────────────┘  └──────────────────┘  └─────────────────┘  │
-└──────────┬──────────────────────┬───────────────────────────────────┘
-           │                      │
-           ▼                      ▼
-┌─────────────────┐    ┌──────────────────────────────────────────────┐
-│ Supabase        │    │ ChromaDB (Vector Store)                       │
-│ (PostgreSQL)    │    │ Persisted on Railway disk at /app/data        │
-│                 │    │                                               │
-│ Tables:         │    │ Collections:                                  │
-│ - cases         │    │ - case_documents (all uploaded doc text)      │
-│ - case_documents│    │ - format_library (enquiry templates)          │
-└─────────────────┘    │ - checklists (freehold/leasehold checks)      │
-                       └──────────────────────────────────────────────┘
-                                         │
-                                         ▼
-                       ┌──────────────────────────────────────────────┐
-                       │ External AI APIs                              │
-                       │                                               │
-                       │ - Google Gemini API (title reports, extract)  │
-                       │ - Groq API (chatbot fallback: gpt-oss-120b)  │
-                       └──────────────────────────────────────────────┘
+│                                                                     │
+│   SentenceTransformer embedding model runs in-process here —       │
+│   the only local/in-memory state the backend holds.                │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                              SUPABASE                                │
+│                                                                       │
+│  Postgres tables          Storage bucket           pgvector tables   │
+│  - cases                  - case-documents          - document_chunks│
+│  - case_documents           (processed PDFs,         - format_library│
+│                              private, signed URLs)                   │
+└──────────────────────────────┬────────────────────────────────────────┘
+                               │
+                               ▼
+                  ┌──────────────────────────────────────────────┐
+                  │ External AI APIs                              │
+                  │                                               │
+                  │ - Google Gemini API (title reports, extract)  │
+                  │ - Groq API (chatbot fallback: gpt-oss-120b)   │
+                  └──────────────────────────────────────────────┘
 ```
+
+Documents, structured metadata, and vector search all live in Supabase — the Railway app process holds no persistent state of its own. The one exception is the SentenceTransformer embedding model, which runs in-process to turn chunk text into vectors before they're written to Postgres.
 
 ---
 
@@ -79,11 +83,10 @@ The system is split into two completely separate applications that communicate v
 | Python | 3.11 | Backend runtime |
 | FastAPI | latest | REST API framework |
 | Uvicorn | latest | ASGI server (runs FastAPI) |
-| ChromaDB | latest | Vector database for semantic search |
-| SentenceTransformers | latest | Local text embedding model (`BAAI/bge-large-en-v1.5`) |
+| SentenceTransformers | latest | Local text embedding model (`all-MiniLM-L6-v2`) |
 | google-generativeai | 0.8.3 | Gemini AI models for all generation tasks |
 | groq | latest | Groq API client (chatbot fallback) |
-| supabase | latest | PostgreSQL database client |
+| supabase | latest | Supabase client — Postgres, Storage, and Auth |
 | ocrmypdf | latest | PDF OCR processing |
 | pymupdf | latest | PDF reading and page extraction |
 | langchain-text-splitters | latest | Intelligent text chunking |
@@ -107,8 +110,8 @@ The system is split into two completely separate applications that communicate v
 | Service | Purpose |
 |---|---|
 | **Vercel** | Hosts the Next.js frontend. Auto-deploys from the `main` branch of GitHub. |
-| **Railway** | Hosts the FastAPI backend inside a Docker container. Provides persistent disk storage for ChromaDB. |
-| **Supabase** | Managed PostgreSQL database AND user authentication service. |
+| **Railway** | Hosts the FastAPI backend inside a Docker container. Stateless — holds no persistent disk data. |
+| **Supabase** | Postgres database, file Storage, vector search (pgvector), and user authentication — all in one place. |
 
 ---
 
@@ -120,15 +123,18 @@ convey-ai/
 ├── backend/                    ← FastAPI Python backend
 │   ├── main.py                 ← Main API server, all HTTP endpoints
 │   ├── auth_utils.py           ← JWT authentication dependency
-│   ├── database.py             ← Supabase database operations
-│   ├── embeddings.py           ← ChromaDB setup & vector operations
+│   ├── database.py             ← Supabase Postgres operations
+│   ├── storage.py              ← Supabase Storage operations (processed PDFs)
+│   ├── embeddings.py           ← Embedding model + pgvector read/write operations
 │   ├── chunker.py              ← Splits document text into chunks
 │   ├── ocr.py                  ← OCR processing for uploaded PDFs
 │   ├── zip_processor.py        ← Handles ZIP file extraction
 │   ├── chatbot.py              ← AI chatbot & enquiry generation (RAG)
 │   ├── title_report.py         ← Title Report AI generation logic
 │   ├── title_check.py          ← Title Check & Enquiry AI logic
-│   ├── ingest_formats.py       ← Populates the format library in ChromaDB
+│   ├── ingest_formats.py       ← Populates the format_library table
+│   ├── sql/
+│   │   └── pgvector_schema.sql ← One-time Supabase SQL setup (tables + RPCs)
 │   ├── routes/                 ← Modular API route files
 │   │   ├── __init__.py
 │   │   ├── formats.py          ← GET /formats/{code} endpoint
@@ -136,10 +142,7 @@ convey-ai/
 │   │   └── form_filler.py      ← POST /form-extract endpoint
 │   ├── requirements.txt        ← Python package dependencies
 │   ├── Dockerfile              ← Docker build instructions for Railway
-│   ├── .env                    ← Secret environment variables (NOT in git)
-│   └── data/                   ← Runtime data (Railway persistent disk)
-│       ├── chroma_db/          ← ChromaDB vector store files
-│       └── processed_pdfs/     ← Processed PDF files served statically
+│   └── .env                    ← Secret environment variables (NOT in git)
 │
 └── frontend/                   ← Next.js React frontend
     ├── app/                    ← Next.js App Router pages
@@ -178,9 +181,9 @@ These are the secret keys that connect the application to external services. The
 |---|---|---|
 | `SUPABASE_URL` | `https://xxxx.supabase.co` | URL of the Supabase project |
 | `SUPABASE_KEY` | `eyJ...` | Supabase **service role** key (bypasses Row Level Security — keep secret!) |
+| `SUPABASE_STORAGE_BUCKET` | `case-documents` | Storage bucket name for processed PDFs. Optional — defaults to `case-documents` if unset. Auto-created on backend startup. |
 | `GEMINI_API_KEY` | `AIzaSy...` | Google Gemini API key for AI generation |
 | `GROQ_API_KEY` | `gsk_...` | Groq API key for chatbot fallback |
-| `DATA_DIR` | `/app/data` | Path for persistent data storage. Set to `/app/data` on Railway, left as `./data` locally. |
 | `DEV_MODE` | `false` | Set to `true` locally only to enable debug endpoints like `/debug-sources` |
 
 ### Frontend — `frontend/.env.local`
@@ -197,7 +200,7 @@ These are the secret keys that connect the application to external services. The
 
 ## 1.6 Supabase Database Schema
 
-Supabase provides a managed PostgreSQL database. The schema has two tables:
+Supabase provides a managed Postgres database. There are two plain relational tables plus two pgvector tables (see §1.7).
 
 ### Table: `cases`
 Stores one record per property case.
@@ -210,7 +213,7 @@ Stores one record per property case.
 | `created_at` | TIMESTAMP | When the case was created. Used for ordering the dashboard. |
 
 ### Table: `case_documents`
-Stores metadata about every uploaded document. The actual file content lives in ChromaDB; this table just tracks what files have been processed.
+Stores metadata about every uploaded document. The actual PDF bytes live in Supabase Storage; this table tracks what's been processed and where to find it.
 
 | Column | Type | Description |
 |---|---|---|
@@ -219,24 +222,23 @@ Stores metadata about every uploaded document. The actual file content lives in 
 | `title_number` | TEXT | Duplicated for easy filtering without joins |
 | `doc_type` | TEXT | Document category code: `OCE`, `LEASE`, `TR1`, `CONTRACT`, `TA6`, `TA10`, `EPC`, `OTHER` |
 | `filename` | TEXT | Original filename (e.g. `Title_Register.pdf`) |
-| `file_url` | TEXT | URL to the processed PDF on Railway (served via `/processed/` static route) |
+| `file_url` | TEXT | **Supabase Storage path** (e.g. `EX332661/Title_Register_ocr.pdf`), not a URL. The bucket is private — a fresh signed URL is minted from this path every time `database.get_case()` returns documents to the frontend, so a stored value never goes stale or leaks a permanent public link. |
 | `processed` | BOOLEAN | Always `true` — set when OCR + embedding is complete |
 
 ---
 
-## 1.7 ChromaDB — Vector Database
+## 1.7 pgvector — Vector Search
 
-ChromaDB is an in-process vector database that stores document text as mathematical vectors (embeddings) so that AI semantic search can work.
+Vector search runs inside the same Supabase Postgres database via the `pgvector` extension — there's no separate vector database process. Two tables hold embeddings (384-dimensional, from the `all-MiniLM-L6-v2` SentenceTransformer model that runs in-process in the backend):
 
-It lives at `DATA_DIR/chroma_db/` on the Railway disk. It has three separate **collections** (think of them as tables):
+| Table | Contents |
+|---|---|
+| `document_chunks` | Text chunks from all uploaded case documents. Columns include `title_number`, `source` (filename), `page`, `chunk_index`, `bbox`, `content`, `embedding`. |
+| `format_library` | Standard UK legal enquiry templates and their codes (e.g. `A1`, `F3a`). Populated by running `ingest_formats.py`. |
 
-| Collection Name | Embedding Model | Contents |
-|---|---|---|
-| `case_documents` | `BAAI/bge-large-en-v1.5` (768 dimensions) | Text chunks from all uploaded case documents. Each chunk has metadata: `title_number`, `source` (filename), `chunk_index`. |
-| `format_library` | `BAAI/bge-large-en-v1.5` (768 dimensions) | Standard UK legal enquiry templates and their codes (e.g. `A1`, `F3a`). Populated by running `ingest_formats.py`. |
-| `checklists` | `BAAI/bge-large-en-v1.5` (768 dimensions) | Freehold and Leasehold title check item descriptions. Used by the Title Check feature to match issues to enquiry codes. |
+Similarity search (cosine distance) is exposed as two Postgres functions — `match_document_chunks` and `match_format_library` — called via `supabase.rpc(...)` from `embeddings.py`, since the Supabase Python client can't do vector math client-side. Both tables and functions are set up once via `backend/sql/pgvector_schema.sql`, run manually in the Supabase SQL Editor (see §1.12).
 
-> **Why use a separate embedding model?** ChromaDB has a built-in default embedder, but it only produces 384-dimensional vectors. Our model (`BAAI/bge-large-en-v1.5`) produces 768-dimensional vectors for significantly better semantic accuracy on legal text. This means **all vector operations must use our custom model** — passing raw text to ChromaDB's built-in search would cause a dimension mismatch crash.
+> **Why `all-MiniLM-L6-v2`?** It's a small, fast model (384-dim output) chosen to keep the backend's memory footprint low. An earlier version of this project used the larger `BAAI/bge-large-en-v1.5` (1024-dim) — if you see that name anywhere else, it's stale; the running code has used MiniLM for some time.
 
 ---
 
@@ -314,7 +316,7 @@ All pages served by the frontend include these HTTP security headers, configured
 - It installs system dependencies: `tesseract-ocr` (OCR engine), `ghostscript` (PDF processing), `libgl1` (image library).
 - Then installs all Python packages from `requirements.txt`.
 - The server starts with: `uvicorn main:app --host 0.0.0.0 --port 8080`
-- Railway provides a **persistent volume** mounted at `/app/data` — this is where ChromaDB and processed PDFs are stored permanently (they survive container restarts and redeploys).
+- The backend is stateless — all persistent data (documents, metadata, vectors) lives in Supabase, not on Railway's disk. No persistent volume is needed.
 - Environment variables are set in the Railway dashboard under the project's "Variables" tab.
 
 ### Frontend — Vercel
@@ -339,7 +341,10 @@ git clone https://github.com/TeamOSOITech/convey-ai.git
 cd convey-ai
 ```
 
-### Step 2 — Backend setup
+### Step 2 — Supabase setup (one-time, per project)
+In the Supabase dashboard, open **SQL Editor → New query**, paste the contents of `backend/sql/pgvector_schema.sql`, and run it. This enables the `pgvector` extension and creates the `document_chunks`/`format_library` tables plus their similarity-search functions. Only needs to be done once per Supabase project.
+
+### Step 3 — Backend setup
 ```bash
 cd backend
 
@@ -370,7 +375,7 @@ uvicorn main:app --reload --port 8000
 ```
 The API is now running at `http://localhost:8000`.
 
-### Step 3 — Frontend setup
+### Step 4 — Frontend setup
 ```bash
 cd frontend
 npm install
@@ -389,8 +394,8 @@ npm run dev
 ```
 The app is now running at `http://localhost:3000`.
 
-### Step 4 — Populate the format library (first time only)
-The ChromaDB `format_library` and `checklists` collections need to be seeded with enquiry templates. This only needs to be done once:
+### Step 5 — Populate the format library (first time only)
+The `format_library` table needs to be seeded with enquiry templates. This only needs to be done once:
 ```bash
 cd backend
 python ingest_formats.py

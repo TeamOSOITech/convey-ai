@@ -11,7 +11,7 @@
 #   4. evaluate_document_vision()      → send page IMAGES + GLOBAL_RULE_POOL to Gemini
 #                                        Gemini visually reads ticked checkboxes like a human
 #                                        Returns a JSON list of triggered rules + reasons
-#   5. fetch_enquiry_template()        → fetch draft template from ChromaDB by exact code ID
+#   5. fetch_enquiry_template()        → fetch draft template from format_library by exact code ID
 #   6. personalise_draft()             → Gemini fills placeholders with seller-specific details
 #   7. run_title_check()               → orchestrates the pipeline, returns findings for the UI
 #
@@ -30,7 +30,7 @@ from PIL import Image
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
 from dotenv import load_dotenv
-from embeddings import case_collection, format_collection
+from embeddings import get_document_chunks, get_enquiry_template
 import storage
 
 load_dotenv()
@@ -368,25 +368,20 @@ Use contextual reasoning — consider form structure and what is ABSENT, not jus
 
 def fetch_enquiry_template(code: str) -> dict:
     """
-    Fetches the enquiry draft text for a given code directly from ChromaDB.
-    Uses get() with the known ID (e.g. "enquiry_E11") — deterministic, no vector search.
+    Fetches the enquiry draft text for a given code directly from the format_library table.
+    Deterministic lookup by ID (e.g. "enquiry_E11") — no vector search.
     Returns {"code", "topic", "text"} or a safe fallback if the code is not in the library.
     """
     try:
-        result = format_collection.get(
-            ids=[f"enquiry_{code}"],
-            include=["documents", "metadatas"]
-        )
-        if result["ids"]:
-            meta = result["metadatas"][0]
-            text = result["documents"][0]
+        row = get_enquiry_template(code)
+        if row:
             return {
-                "code":  meta.get("code", code),
-                "topic": meta.get("topic", f"Enquiry {code}"),
-                "text":  text
+                "code":  row.get("code", code),
+                "topic": row.get("topic", f"Enquiry {code}"),
+                "text":  row["content"]
             }
     except Exception as e:
-        print(f"[TitleCheck] ChromaDB fetch failed for {code}: {e}")
+        print(f"[TitleCheck] Format library fetch failed for {code}: {e}")
 
     # Fallback — shown to solicitor with a manual drafting prompt
     return {
@@ -447,27 +442,14 @@ Maintain the formal legal tone of the template exactly."""
 
 def get_all_chunks_text(title_number: str, filename: str) -> str:
     """
-    Fetches all ChromaDB chunks for a specific document and reconstructs the
+    Fetches all chunks for a specific document and reconstructs the
     full document text in reading order. We chunk on ingest but need full text
     for the Gemini evaluation step.
     """
-    results = case_collection.get(
-        where={
-            "$and": [
-                {"title_number": {"$eq": title_number.upper()}},
-                {"source":       {"$eq": filename}}
-            ]
-        },
-        include=["documents", "metadatas"]
-    )
-
-    if not results["ids"]:
+    chunks = get_document_chunks(title_number, filename)
+    if not chunks:
         return ""
-
-    # Sort by chunk_index to restore reading order before joining
-    paired = list(zip(results["documents"], results["metadatas"]))
-    paired.sort(key=lambda x: x[1].get("chunk_index", 0))
-    return "\n\n".join(doc for doc, _ in paired)
+    return "\n\n".join(c["text"] for c in chunks)
 
 
 # ── Main Entry Point ──────────────────────────────────────────────────────────
@@ -477,11 +459,11 @@ def run_title_check(filename: str, title_number: str) -> dict:
     Orchestrates the full Title Check pipeline for one document.
 
     Steps:
-      1. Resolve PDF file path on disk
+      1. Fetch the processed PDF bytes from Supabase Storage
       2. Classify document type (context only — does not restrict rules evaluated)
       3a. PRIMARY:  Convert PDF pages to images → send to Gemini Vision
-      3b. FALLBACK: If PDF not on disk, send OCR text from ChromaDB to Gemini
-      4. For each triggered rule: fetch template from ChromaDB + personalise with Gemini
+      3b. FALLBACK: If PDF not in Storage, send OCR text from the vector store to Gemini
+      4. For each triggered rule: fetch template from format_library + personalise with Gemini
       5. Return structured findings for the frontend Review Board
 
     Returns:
@@ -528,11 +510,11 @@ def run_title_check(filename: str, title_number: str) -> dict:
             evaluation_mode = "text-fallback"
     else:
         # PDF not in Storage (e.g. never uploaded through the current pipeline)
-        # Fall back to OCR text from ChromaDB
+        # Fall back to OCR text from the vector store
         if not full_text:
             return {
                 "error": (
-                    f"Could not find '{filename}' in Storage or ChromaDB. "
+                    f"Could not find '{filename}' in Storage or the vector store. "
                     f"Please re-upload and process the document."
                 )
             }
@@ -547,7 +529,7 @@ def run_title_check(filename: str, title_number: str) -> dict:
         reason   = item["reason"]
         evidence = item["evidence"]
 
-        # Fetch enquiry template from ChromaDB format_library by exact ID
+        # Fetch enquiry template from format_library by exact ID
         template = fetch_enquiry_template(code)
 
         # Personalise with Gemini only if template has placeholders

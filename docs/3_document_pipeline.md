@@ -5,16 +5,16 @@
 
 ## 3.1 Overview
 
-When a solicitor uploads a document (PDF or ZIP), it passes through a 5-stage pipeline before the AI can read it. Each stage is handled by a dedicated module:
+When a solicitor uploads a document (PDF or ZIP), it passes through several stages before the AI can read it. Each stage is handled by a dedicated module:
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                    DOCUMENT PROCESSING PIPELINE                      │
-│                                                                      │
-│  [Upload]──►[Extract]──►[OCR]──►[Chunk]──►[Embed & Store]          │
-│                                                                      │
-│  zip_processor.py   ocr.py    chunker.py    embeddings.py           │
-└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    DOCUMENT PROCESSING PIPELINE                              │
+│                                                                                │
+│  [Upload]──►[Extract]──►[OCR/Extract]──►[Chunk]──►[Embed & Store]──►[Upload] │
+│                                                                                │
+│  zip_processor.py   ocr.py    chunker.py    embeddings.py     storage.py     │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 This pipeline runs synchronously per document during the upload request. The frontend waits for the full pipeline to complete before showing the success state.
@@ -41,7 +41,7 @@ This stage only runs when the user uploads a **ZIP file** (i.e. a full contract 
 6. Return the list of extracted documents
 ```
 
-> **Important:** The temp directory is always cleaned up in a `finally` block, even if an error occurs mid-way through. This prevents temporary files from accumulating on the Railway disk.
+> **Important:** The temp directory is always cleaned up in a `finally` block, even if an error occurs mid-way through. This is local, transient disk use inside the Railway container during a single request — it's unrelated to document *storage*, which lives entirely in Supabase (see Stage 5).
 
 ### Document Type Detection — `identify_doc_type(filename)`
 
@@ -71,64 +71,27 @@ The function performs a case-insensitive keyword scan of the filename. It checks
 
 ---
 
-## 3.3 Stage 2 — OCR Processing (`ocr.py`)
+## 3.3 Stage 2 — Text Extraction (`ocr.py`)
 
-This is the most computationally intensive stage. Its job is to take a PDF (which may be a scanned image with no selectable text) and produce:
-1. A **text-searchable OCR'd PDF** saved permanently to disk
-2. The **extracted plain text** for chunking and embedding
+Despite the filename, this stage does **not** run OCR today — it uses PyMuPDF to read whatever text layer a PDF already has, along with each word's bounding box (used later for PDF highlighting).
 
-### Why OCR is necessary
-Solicitors frequently receive PDFs that are scanned photocopies — essentially images stored inside a PDF container. These contain zero machine-readable text. Without OCR, the AI would have nothing to read. OCRmyPDF uses Tesseract (an open-source OCR engine) to read the images and add a proper text layer.
-
-### The full process — `process_pdf(input_pdf_bytes, filename)`
+### The full process — `process_pdf(pdf_bytes, filename)`
 
 ```
-Step 1: Write the uploaded PDF bytes to a temp file (needed by ocrmypdf which requires a file path)
-
-Step 2: Build the output path
-        - Clean the filename (spaces → underscores, remove brackets/commas)
-        - Remove any existing extension
-        - Append _ocr.pdf
-        - Example: "Lease Document (Copy).PDF" → "Lease_Document_Copy_ocr.pdf"
-        - Full path: DATA_DIR/processed_pdfs/Lease_Document_Copy_ocr.pdf
-
-Step 3: Run ocrmypdf.ocr(input_path, output_path, ...)
-        - force_ocr=True    → processes EVERY page, even those that already have text
-                              (prevents partially-OCR'd PDFs from slipping through)
-        - language="eng"    → English language model for Tesseract
-        - optimize=0        → skip PDF compression (faster, less CPU)
-        - oversample=300    → 300 DPI upsampling for accuracy on small/blurry text
-        - jobs=1            → single-threaded (Railway free tier has limited CPU)
-
-Step 4: Open the saved OCR'd PDF with PyMuPDF (fitz)
-        - Iterate over every page
-        - Call page.get_text() to extract the text layer
-        - Concatenate all pages into one big string
-
-Step 5: Return {success, text, pages, saved_pdf}
-
-Step 6 (finally): Delete the temp INPUT file
-                  The OUTPUT file is kept permanently on disk
+1. Open the PDF bytes in-memory with PyMuPDF (fitz.open(stream=..., filetype="pdf"))
+2. For every page:
+   a. Read page width/height
+   b. Extract words with bounding boxes via page.get_text("words")
+   c. Group words into line-ish blocks (splits every ~100 chars or on a newline)
+3. Return {success, pages: [{page, blocks, width, height}, ...], filename}
 ```
 
-### OCR settings explained
+Nothing is written to disk during this stage — it works entirely on the in-memory `pdf_bytes` and returns structured data. The original uploaded PDF bytes are what later get uploaded to Supabase Storage (Stage 5), unmodified.
 
-| Setting | Value | Reason |
-|---|---|---|
-| `force_ocr` | `True` | Ensures every page is re-OCR'd. Without this, pages that already have a text layer (even a bad one) would be skipped. |
-| `language` | `"eng"` | English language pack for Tesseract. Legal documents are always English. |
-| `optimize` | `0` | Disables PDF compression post-OCR. Keeps output fast at the cost of slightly larger file size. |
-| `oversample` | `300` | Upsamples images to 300 DPI before OCR. Dramatically improves accuracy on small or blurry scans. |
-| `jobs` | `1` | Limits to a single CPU thread. Railway's free tier has limited CPU; multi-threading causes out-of-memory crashes. |
-
-### Output
-
-- **OCR'd PDF saved to disk:** `DATA_DIR/processed_pdfs/{clean_filename}_ocr.pdf`
-  - This file is served to the frontend via `/view-pdf/{filename}` for the in-browser PDF viewer
-- **Extracted text:** returned as a single Python string, passed to the chunker
+> **History note:** An earlier version of this module ran `ocrmypdf` (real OCR via Tesseract) and saved a searchable, OCR'd copy of the PDF permanently to disk. That was replaced with the current PyMuPDF-only extraction to fit Railway's free-tier memory limits — `ocrmypdf` is a much heavier dependency. If a scanned document has no existing text layer, `page.get_text("words")` simply returns nothing for that page; there's no OCR fallback today.
 
 ### Error handling
-If `ocrmypdf.ocr()` throws any exception (corrupt PDF, unsupported format, memory issue), the function catches it and returns `{"success": False, "error": "..."}`. The pipeline in `main.py` checks this and records the failure in the upload results without crashing the whole batch.
+If extraction throws any exception (corrupt PDF, unsupported format), the function catches it and returns `{"success": False, "error": "..."}`. The pipeline in `main.py` checks this and records the failure in the upload results without crashing the whole batch.
 
 ---
 
@@ -172,13 +135,16 @@ Each chunk is returned as a dictionary:
     "text": "...the actual text of this chunk...",
     "metadata": {
         "source": "Title_Register.pdf",   # original filename — used for filtering
+        "title_number": "EX332661",
+        "page": 3,
+        "bbox": [0.12, 0.30, 0.88, 0.34], # normalised 0-1 coordinates, or None
         "chunk_index": 7,                  # position in document (0-indexed)
         "total_chunks": 42                 # total number of chunks in this document
     }
 }
 ```
 
-> **Critical — the `source` key:** The `source` metadata field is the single most important piece of metadata in the entire system. Every ChromaDB query that filters by document uses `where: {"source": {"$eq": filename}}`. If this key were missing or named differently, document-specific search would fail entirely. It is set here in the chunker and relied upon by the chatbot, title check, smart extract, and form filler.
+> **Critical — the `source` key:** The `source` metadata field is the single most important piece of metadata in the entire system. Every vector-store query that filters by document uses `title_number` + `source` (filename). If this key were missing or named differently, document-specific search would fail entirely. It is set here in the chunker and relied upon by the chatbot, title check, smart extract, and form filler.
 
 ### Example
 A 10-page lease document with 30,000 characters would produce approximately **60–70 chunks** with overlap.
@@ -187,21 +153,22 @@ A 10-page lease document with 30,000 characters would produce approximately **60
 
 ## 3.5 Stage 4 — Embedding & Storage (`embeddings.py`)
 
-The final stage converts each chunk's text into a **768-dimensional vector** (a list of 768 floating-point numbers) and stores it in ChromaDB alongside its metadata.
+Each chunk's text is converted into a **384-dimensional vector** and stored in Supabase Postgres (via the `pgvector` extension) alongside its metadata — see `backend/sql/pgvector_schema.sql` for the table definitions.
 
 ### The embedding model
 ```python
 model = SentenceTransformer(
-    "BAAI/bge-large-en-v1.5",
+    "all-MiniLM-L6-v2",
     cache_folder="./models"     # downloaded once, cached here permanently
 )
 ```
 
-**Why `BAAI/bge-large-en-v1.5`?**
-- Specifically designed for **retrieval tasks** (finding relevant documents given a query)
-- Produces 768-dimensional vectors — higher dimensional than most free models, meaning more semantic nuance is preserved
-- Strong performance on legal and professional English text
-- The `bge` name stands for **Beijing General Embeddings** — it is one of the top-ranked models on the MTEB (Massive Text Embedding Benchmark) leaderboard
+**Why `all-MiniLM-L6-v2`?**
+- Small and fast (384-dim output) — chosen specifically to keep the backend's memory footprint low enough for Railway's free/hobby tier
+- Runs entirely in-process; no external embedding API call, no per-request cost
+- Good general-purpose semantic search quality for a model this size
+
+> If you see references elsewhere to `BAAI/bge-large-en-v1.5` (1024-dim, "Beijing General Embeddings") — that was an earlier, larger model this project used before the switch to MiniLM. It's no longer in the code. Because the vector column is now a fixed `vector(384)` in Postgres, a future model swap to a different dimensionality would need a schema migration, not just a code change — Postgres rejects a mismatched-dimension insert outright rather than silently corrupting data.
 
 ### The `store_case_chunks()` function
 
@@ -212,53 +179,35 @@ def store_case_chunks(chunks: list, title_number: str):
     texts = [chunk["text"] for chunk in chunks]
 
     # 2. Convert all texts to vectors in one batch operation
-    embeddings = model.encode(texts).tolist()
+    vectors = model.encode(texts).tolist()
 
-    # 3. Build unique IDs for each chunk
-    #    Format: {TITLE_NUMBER}_{safe_source_filename}_chunk_{N}
-    #    Example: EX332661_Title_Register.pdf_chunk_0
-    #    Note: safe_source replaces spaces with underscores to keep IDs clean
-    ids = [f"{title_number}_{chunk['metadata']['source'].replace(' ', '_')}_chunk_{i}"
-           for i, chunk in enumerate(chunks)]
+    # 3. Build one row per chunk, with a globally-unique ID
+    #    Format: {TITLE_NUMBER}_{safe_source}_p{page}_c{chunk_index}_{uuid8}
+    #    Example: EX332661_Title_Register.pdf_p3_c7_a1b2c3d4
+    rows = [...]  # id, title_number, source, page, chunk_index, total_chunks,
+                  # bbox, content, embedding
 
-    # 4. Build metadata list (spread existing metadata + add title_number)
-    metadatas = [
-        {**chunk["metadata"], "title_number": title_number}
-        for chunk in chunks
-    ]
-
-    # 5. Store everything in ChromaDB in one batch call
-    case_collection.add(
-        ids=ids,
-        embeddings=embeddings,
-        documents=texts,
-        metadatas=metadatas
-    )
+    # 4. Insert everything into Postgres in one batch call
+    supabase.table("document_chunks").insert(rows).execute()
 ```
 
 ### Why the ID includes the source filename
-Early versions used IDs like `EX332661_chunk_0`. This caused a **silent overwrite bug**: if two documents in the same case both had a chunk 0, the second document's chunk 0 would silently overwrite the first document's chunk 0 in ChromaDB (IDs must be unique). By including the source filename in the ID, each document's chunks are guaranteed to have globally unique IDs.
+Early versions used IDs like `EX332661_chunk_0`. This caused a **silent overwrite bug**: if two documents in the same case both had a chunk 0, the second document's chunk 0 would silently overwrite the first document's chunk 0 (IDs must be unique). By including the source filename (and now the page number) in the ID, each document's chunks are guaranteed to have globally unique IDs.
 
-### ChromaDB collections
+### The two pgvector tables
 
-The system uses three collections:
-
-#### `case_documents`
+#### `document_chunks`
 - **Contents:** All text chunks from all uploaded case documents, across all cases
-- **Key metadata fields:** `title_number`, `source` (filename), `chunk_index`, `total_chunks`
-- **How it's queried:** Always filtered by `title_number` first. Then optionally filtered by `source` to narrow to a specific document.
+- **Key columns:** `title_number`, `source` (filename), `page`, `chunk_index`, `total_chunks`, `bbox`, `content`, `embedding`
+- **How it's queried:** Always filtered by `title_number` first (via the `match_document_chunks` Postgres function for similarity search, or a plain filtered `select` for "give me every chunk of this document"). Optionally filtered by `source` to narrow to a specific document.
 
 #### `format_library`
 - **Contents:** Standard UK conveyancing enquiry templates
-- **Key metadata fields:** `code` (e.g. `A1`, `F3a`), `topic` (e.g. `"Boundaries"`)
-- **How it's queried:** Semantically — given a description of an issue, find the most relevant template
+- **Key columns:** `code` (e.g. `A1`, `F3a`), `topic` (e.g. `"Boundaries"`), `content`
+- **How it's queried:** Semantically via the `match_format_library` function — given a description of an issue, find the most relevant template. Also supports a deterministic lookup by `id` (`"enquiry_A1"`) or `code`.
 - **Populated by:** `ingest_formats.py` (one-time seeding script)
 
-#### `checklists`
-- **Contents:** Freehold and Leasehold title check item descriptions
-- **Key metadata fields:** `checklist_type` (`freehold`/`leasehold`), `item_id`
-- **How it's queried:** By `checklist_type` to get all items for the relevant property type
-- **Populated by:** `ingest_formats.py` (same script, different section)
+> A third collection, `checklists`, existed in an earlier ChromaDB-based version of this system but was never actually written to or queried by any code path. It was dropped during the move to pgvector rather than carried forward as dead schema.
 
 ---
 
@@ -273,11 +222,12 @@ User question: "What is the annual ground rent?"
 model.encode(["What is the annual ground rent?"])
          │
          ▼
-Query vector: [0.023, -0.891, 0.445, ... ] (768 numbers)
+Query vector: [0.023, -0.891, 0.445, ... ] (384 numbers)
          │
          ▼
-ChromaDB: compare query vector against ALL stored chunk vectors
-         using cosine similarity (measures angle between vectors)
+Postgres (pgvector): compare query vector against stored chunk vectors
+         for this title_number using cosine distance (the <=> operator),
+         via the match_document_chunks() SQL function
          │
          ▼
 Returns the N chunks whose vectors are most similar to the query vector
@@ -290,10 +240,10 @@ Chunks that are **semantically similar** to the query — even if they don't sha
 
 ## 3.7 The `ingest_formats.py` Script
 
-This is a **one-time setup script** that populates the `format_library` and `checklists` ChromaDB collections. It does not run during normal operation — it is only run when:
-1. Setting up the server for the first time
+This is a **one-time setup script** that populates the `format_library` table. It does not run during normal operation — it is only run when:
+1. Setting up a new Supabase project for the first time
 2. Adding new enquiry templates to the library
-3. Rebuilding after the ChromaDB data is wiped
+3. Rebuilding after the table is wiped
 
 ### How to run it
 ```bash
@@ -304,14 +254,14 @@ python ingest_formats.py
 ```
 
 ### What it contains
-The script contains the entire library of standard UK conveyancing enquiries hardcoded as Python strings. Each enquiry has:
+The script contains the entire library of standard UK conveyancing enquiries hardcoded as Python dicts. Each enquiry has:
 - A **code** (e.g. `A1`, `B2`, `F3a`) — standard SCPC/Law Society enquiry reference
 - A **topic** (e.g. `"Boundaries"`, `"Title Guarantee"`)
-- A **draft** (the full text of the standard enquiry letter wording)
+- A **text** (the full draft wording of the standard enquiry letter)
 
-These are embedded using the same `BAAI/bge-large-en-v1.5` model and stored in `format_library` so the AI can find the most relevant template for any issue a solicitor describes.
+These are embedded using the same `all-MiniLM-L6-v2` model, via `embeddings.store_format_entries()`, which does a genuine wipe-and-rebuild (delete all rows, then insert fresh) so re-running the script or hitting `/reingest-formats` is always safe and idempotent.
 
-> **Maintenance note:** When new enquiry formats are added to `ingest_formats.py`, hit `POST /reingest-formats` on the live Railway server to rebuild the collection. This wipes the existing collection first to avoid duplicate entries.
+> **Maintenance note:** When new enquiry formats are added to `ingest_formats.py`, hit `POST /reingest-formats` on the live Railway server to rebuild the table.
 
 ---
 
@@ -326,28 +276,31 @@ solicitor uploads "Lease.pdf" for case "EX332661"
 │     Extracts Lease.pdf, identifies doc_type = "LEASE"
 │
 ├─► ocr.py
-│     Runs tesseract OCR on all 40 pages
-│     Saves: /app/data/processed_pdfs/Lease_ocr.pdf  ← stays on disk permanently
-│     Returns: 40,000 characters of text
+│     Reads text + bounding boxes from all 40 pages via PyMuPDF
+│     Returns: pages with word blocks (no file written to disk)
 │
 ├─► chunker.py
-│     Splits 40,000 chars into ~75 chunks (600 chars each, 200 overlap)
-│     Each chunk: {text: "...", metadata: {source: "Lease.pdf", chunk_index: N}}
+│     Splits the page text into ~75 chunks (600 chars each, 200 overlap)
+│     Each chunk: {text: "...", metadata: {source: "Lease.pdf", page: N, chunk_index: N}}
 │
 ├─► embeddings.py
-│     Encodes 75 texts into 75 × 768-d vectors
-│     Stores in ChromaDB case_documents collection
-│     IDs: "EX332661_Lease.pdf_chunk_0" through "EX332661_Lease.pdf_chunk_74"
+│     Encodes 75 texts into 75 × 384-d vectors
+│     Inserts into Postgres document_chunks table
+│     IDs: "EX332661_Lease.pdf_p1_c0_a1b2c3d4" ... one per chunk
+│
+├─► storage.py
+│     Uploads the original PDF bytes to Supabase Storage
+│     Path: EX332661/Lease_ocr.pdf (private bucket)
 │
 ├─► database.py
 │     Inserts into Supabase case_documents:
 │     {title_number: "EX332661", doc_type: "LEASE", filename: "Lease.pdf",
-│      file_url: "https://railway.../view-pdf/Lease_ocr.pdf"}
+│      file_url: "EX332661/Lease_ocr.pdf"}   ← a Storage path, not a URL
 │
-└─► Response to frontend: {success: true, pages: 40, total_chunks: 75}
+└─► Response to frontend: {success: true, pages: 40, total_chunks: 75, download_url: <signed URL>}
 ```
 
-From this point, every AI feature in the system can find and read this lease by querying ChromaDB with `{"title_number": "EX332661", "source": "Lease.pdf"}`.
+From this point, every AI feature in the system can find and read this lease by querying `document_chunks` with `title_number = "EX332661" AND source = "Lease.pdf"`, and can fetch the PDF itself from Supabase Storage.
 
 ---
 
