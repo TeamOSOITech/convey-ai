@@ -11,9 +11,9 @@ When a solicitor uploads a document (PDF or ZIP), it passes through several stag
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                    DOCUMENT PROCESSING PIPELINE                              │
 │                                                                                │
-│  [Upload]──►[Extract]──►[OCR/Extract]──►[Chunk]──►[Embed & Store]──►[Upload] │
+│  [Extract]──►[OCR + Extract]──►[Chunk]──►[Embed & Store]──►[Upload]          │
 │                                                                                │
-│  zip_processor.py   ocr.py    chunker.py    embeddings.py     storage.py     │
+│  zip_processor.py    ocr.py       chunker.py    embeddings.py    storage.py  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -71,27 +71,45 @@ The function performs a case-insensitive keyword scan of the filename. It checks
 
 ---
 
-## 3.3 Stage 2 — Text Extraction (`ocr.py`)
+## 3.3 Stage 2 — OCR & Text Extraction (`ocr.py`)
 
-Despite the filename, this stage does **not** run OCR today — it uses PyMuPDF to read whatever text layer a PDF already has, along with each word's bounding box (used later for PDF highlighting).
+This stage actually OCRs the PDF (via `ocrmypdf`/Tesseract) before extracting word-level text with bounding boxes (used later for PDF highlighting/citations). It has to: many real-world uploads — e.g. HM Land Registry "official copies" — are scanned images with no native text layer at all. Reading those with PyMuPDF alone returns nothing but the odd digitally-stamped footer, not the actual document content.
 
 ### The full process — `process_pdf(pdf_bytes, filename)`
 
 ```
-1. Open the PDF bytes in-memory with PyMuPDF (fitz.open(stream=..., filetype="pdf"))
-2. For every page:
+1. Write pdf_bytes to a temp file — ocrmypdf needs a real file path, not bytes
+2. Run ocrmypdf.ocr(input_path, output_path, force_ocr=True, language="eng",
+   optimize=0, oversample=300, jobs=1)
+   → force_ocr=True re-OCRs EVERY page, even ones that already have a text
+     layer, so a partially-OCR'd PDF can't slip through
+   → this embeds a real, correctly-positioned text layer over the scanned
+     image, using Tesseract's word-level bounding boxes
+3. Read the OCR'd output back into memory (ocr_pdf_bytes) — this is the
+   searchable copy that gets uploaded to Supabase Storage (Stage 5), not
+   the raw original upload
+4. Open the OCR'd PDF with PyMuPDF, and for every page:
    a. Read page width/height
-   b. Extract words with bounding boxes via page.get_text("words")
+   b. Extract words with bounding boxes via page.get_text("words") —
+      now populated with Tesseract's OCR output, not just pre-existing text
    c. Group words into line-ish blocks (splits every ~100 chars or on a newline)
-3. Return {success, pages: [{page, blocks, width, height}, ...], filename}
+5. Return {success, pages: [{page, blocks, width, height}, ...], filename, ocr_pdf_bytes}
+6. Delete both temp files (finally block) — nothing is kept on local disk;
+   the durable copy is whatever the caller uploads to Storage
 ```
 
-Nothing is written to disk during this stage — it works entirely on the in-memory `pdf_bytes` and returns structured data. The original uploaded PDF bytes are what later get uploaded to Supabase Storage (Stage 5), unmodified.
+### OCR settings explained
 
-> **History note:** An earlier version of this module ran `ocrmypdf` (real OCR via Tesseract) and saved a searchable, OCR'd copy of the PDF permanently to disk. That was replaced with the current PyMuPDF-only extraction to fit Railway's free-tier memory limits — `ocrmypdf` is a much heavier dependency. If a scanned document has no existing text layer, `page.get_text("words")` simply returns nothing for that page; there's no OCR fallback today.
+| Setting | Value | Reason |
+|---|---|---|
+| `force_ocr` | `True` | Ensures every page is re-OCR'd, even ones with an existing (possibly bad) text layer. |
+| `language` | `"eng"` | English language pack for Tesseract — legal documents are always English. |
+| `optimize` | `0` | Disables PDF compression post-OCR — faster, avoids errors. |
+| `oversample` | `300` | Upsamples images to 300 DPI before OCR — dramatically improves accuracy on small/blurry scans, at a real memory cost. |
+| `jobs` | `1` | Single-threaded — Railway's tier has limited CPU/memory; this setting has previously been the lever pulled to fix OOM crashes if `oversample` proves too expensive in practice. |
 
 ### Error handling
-If extraction throws any exception (corrupt PDF, unsupported format), the function catches it and returns `{"success": False, "error": "..."}`. The pipeline in `main.py` checks this and records the failure in the upload results without crashing the whole batch.
+If OCR or extraction throws any exception (corrupt PDF, unsupported format, OOM), the function catches it and returns `{"success": False, "error": "..."}`. The pipeline in `main.py` checks this and records the failure in the upload results without crashing the whole batch.
 
 ---
 
@@ -276,8 +294,9 @@ solicitor uploads "Lease.pdf" for case "EX332661"
 │     Extracts Lease.pdf, identifies doc_type = "LEASE"
 │
 ├─► ocr.py
-│     Reads text + bounding boxes from all 40 pages via PyMuPDF
-│     Returns: pages with word blocks (no file written to disk)
+│     Runs ocrmypdf/Tesseract on all 40 pages (temp file in, temp file out)
+│     Reads text + bounding boxes from the OCR'd result via PyMuPDF
+│     Returns: pages with word blocks + ocr_pdf_bytes (temp files deleted after)
 │
 ├─► chunker.py
 │     Splits the page text into ~75 chunks (600 chars each, 200 overlap)
@@ -289,8 +308,8 @@ solicitor uploads "Lease.pdf" for case "EX332661"
 │     IDs: "EX332661_Lease.pdf_p1_c0_a1b2c3d4" ... one per chunk
 │
 ├─► storage.py
-│     Uploads the original PDF bytes to Supabase Storage
-│     Path: EX332661/Lease_ocr.pdf (private bucket)
+│     Uploads ocr_pdf_bytes (the searchable, OCR'd copy — not the raw upload)
+│     to Supabase Storage. Path: EX332661/Lease_ocr.pdf (private bucket)
 │
 ├─► database.py
 │     Inserts into Supabase case_documents:

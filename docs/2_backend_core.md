@@ -217,8 +217,8 @@ POST /upload-pdf (or /upload-zip)
          ├── 2. EXTRACT (ZIP only) — zip_processor.py extracts individual PDFs
          │         and auto-detects doc_type from filename keywords
          │
-         ├── 3. OCR/EXTRACT — ocr.py reads text + bounding boxes from every page
-         │         via PyMuPDF (no separate OCR'd file is produced or saved)
+         ├── 3. OCR — ocr.py runs ocrmypdf/Tesseract on the PDF (temp files),
+         │         then reads text + bounding boxes from every page via PyMuPDF
          │
          ├── 4. CHUNK — chunker.py splits the extracted text
          │         → Uses LangChain RecursiveCharacterTextSplitter
@@ -230,8 +230,9 @@ POST /upload-pdf (or /upload-zip)
          │         → Stored in the document_chunks Postgres table (pgvector)
          │         → Each row ID: {title_number}_{safe_source}_p{page}_c{chunk_index}_{uuid}
          │
-         ├── 6. UPLOAD — storage.py uploads the PDF bytes to Supabase Storage
-         │         at {title_number}/{clean_name}_ocr.pdf (private bucket)
+         ├── 6. UPLOAD — storage.py uploads the OCR'd PDF bytes (the searchable
+         │         copy, not the raw upload) to Supabase Storage at
+         │         {title_number}/{clean_name}_ocr.pdf (private bucket)
          │
          ├── 7. REGISTER — database.py writes to Supabase case_documents table
          │         → Records: title_number, doc_type, filename, file_url (Storage path)

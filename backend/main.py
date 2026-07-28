@@ -157,10 +157,10 @@ async def upload_zip(
             # Store vectors
             store_case_chunks(all_chunks, title_number)
 
-            # Upload processed PDF to Supabase Storage, register the storage
-            # path (not a URL — signed URLs are minted on read, see database.get_case)
+            # Upload the OCR'd PDF (not the raw upload) to Supabase Storage, register the
+            # storage path (not a URL — signed URLs are minted on read, see database.get_case)
             cleaned = make_clean_filename(doc["filename"])
-            storage_path = storage.upload_document(title_number, cleaned, doc["pdf_bytes"])
+            storage_path = storage.upload_document(title_number, cleaned, ocr_result["ocr_pdf_bytes"])
 
             add_document(
                 title_number=title_number,
@@ -231,9 +231,9 @@ async def upload_pdf(
     # Step 4: Store vectors
     store_case_chunks(all_chunks, title_number)
 
-    # Step 5: Upload processed PDF to Supabase Storage
+    # Step 5: Upload the OCR'd PDF (not the raw upload) to Supabase Storage
     cleaned = make_clean_filename(file.filename)
-    storage_path = storage.upload_document(title_number, cleaned, pdf_bytes)
+    storage_path = storage.upload_document(title_number, cleaned, ocr_result["ocr_pdf_bytes"])
     download_url = storage.get_signed_url(storage_path)
 
     # Step 6: Ensure case exists
