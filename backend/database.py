@@ -62,8 +62,13 @@ def add_document(title_number: str, doc_type: str, filename: str, file_url: str 
 
 def get_case(title_number: str) -> dict:
     """
-    Gets a case and all its documents by title number
+    Gets a case and all its documents by title number.
+    case_documents.file_url holds a Supabase Storage *path*, not a URL —
+    each document's file_url is swapped here for a freshly-minted signed URL.
     """
+    # Local import to avoid a circular import — storage.py imports `supabase` from this module.
+    from storage import get_signed_url
+
     # Get case
     case = supabase.table("cases")\
         .select("*")\
@@ -79,10 +84,15 @@ def get_case(title_number: str) -> dict:
         .eq("title_number", title_number)\
         .execute()
 
+    docs = documents.data
+    for doc in docs:
+        if doc.get("file_url"):
+            doc["file_url"] = get_signed_url(doc["file_url"])
+
     return {
         "success": True,
         "case": case.data[0],
-        "documents": documents.data
+        "documents": docs
     }
 
 

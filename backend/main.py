@@ -2,13 +2,12 @@
 
 from fastapi import FastAPI, UploadFile, File, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from ocr import process_pdf
 from chunker import chunk_page
 from embeddings import store_case_chunks, search_formats, case_collection
 from chatbot import ask_question, raise_enquiry
 from database import create_case, add_document, get_case, get_all_cases, delete_document
+import storage
 import os
 from pydantic import BaseModel
 from typing import List, Optional
@@ -19,42 +18,15 @@ from fastapi.responses import JSONResponse
 from title_report import generate_title_report
 from title_check import run_title_check
 from auth_utils import require_auth
-from fastapi import FastAPI, UploadFile, File, Depends, Header
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, Response  # ← ADD Response here
-from ocr import process_pdf
 
-
-# Create required folders if they don't exist
-# Railway starts with a clean filesystem so we need to create these
-
-"""In embeddings.py:
-pythonDATA_DIR = os.getenv("DATA_DIR", "./data")
-client = chromadb.PersistentClient(path=f"{DATA_DIR}/chroma_db")
-In ocr.py:
-pythonDATA_DIR = os.getenv("DATA_DIR", "./data")
-PROCESSED_FOLDER = f"{DATA_DIR}/processed_pdfs"
-In main.py:
-pythonDATA_DIR = os.getenv("DATA_DIR", "./data")
-os.makedirs(f"{DATA_DIR}/processed_pdfs", exist_ok=True)
-os.makedirs(f"{DATA_DIR}/chroma_db", exist_ok=True)
-Then in Railway Variables add:
-DATA_DIR=/app/data
-Locally it uses ./data, on Railway it uses /app/data. Clean and portable."""
 
 # Set data directory — uses /app/data on Railway, ./data locally
+# Only chroma_db (the vector store) still lives on local/volume disk —
+# processed PDFs live in Supabase Storage, see storage.py.
 DATA_DIR = os.getenv("DATA_DIR", "./data")
-
-# Create required folders
-os.makedirs(f"{DATA_DIR}/processed_pdfs", exist_ok=True)
 os.makedirs(f"{DATA_DIR}/chroma_db", exist_ok=True)
 
-# Create FastAPI app BEFORE mounting anything
 app = FastAPI()
-
-# Mount static files AFTER app is created
-app.mount("/processed", StaticFiles(directory=f"{DATA_DIR}/processed_pdfs"), name="processed")
 
 # Update CORS middleware to be more permissive for local development
 app.add_middleware(
@@ -108,69 +80,10 @@ async def ingest_formats_route():
     ingest_all_enquiries()
     return {"success": True, "message": "Format library ingested"}
 
-# main.py - Updated view-pdf endpoint with proper headers
-
-@app.get("/view-pdf/{filename}")
-async def view_pdf(filename: str):
-    """
-    Serves a processed PDF file for inline viewing in the browser.
-    """
-    import pathlib
-    import urllib.parse
-    
-    # Decode URL-encoded filename
-    filename = urllib.parse.unquote(filename)
-    
-    # Reject traversal attempts
-    if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
-        raise HTTPException(status_code=400, detail="Invalid filename")
-    
-    # Build path
-    base_dir = pathlib.Path(DATA_DIR).resolve() / "processed_pdfs"
-    requested_path = (base_dir / filename).resolve()
-    
-    if not str(requested_path).startswith(str(base_dir)):
-        raise HTTPException(status_code=400, detail="Invalid filename")
-    
-    if not requested_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    # Return with proper headers for iframe viewing
-    safe_filename = urllib.parse.quote(filename)
-    
-    return FileResponse(
-        path=str(requested_path),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'inline; filename="{safe_filename}"',
-            "Content-Type": "application/pdf",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Expose-Headers": "*",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-            # Disable CSP completely for development - this is the key fix
-            "Content-Security-Policy": "frame-ancestors 'self' *",
-            "X-Frame-Options": "ALLOWALL",
-            "Cross-Origin-Resource-Policy": "cross-origin",
-            "Cross-Origin-Embedder-Policy": "unsafe-none",
-        }
-    )
-
-# Add OPTIONS handler for CORS preflight
-@app.options("/view-pdf/{filename}")
-async def options_view_pdf(filename: str):
-    return Response(
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, OPTIONS",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Max-Age": "86400",
-            }
-    )
-
+# /view-pdf/{filename} used to proxy local-disk PDFs for inline viewing.
+# Documents now live in Supabase Storage — case_documents.file_url holds a
+# signed URL (minted in database.get_case()) that the frontend loads directly,
+# so this proxy route is no longer needed.
 
 @app.get("/")
 def home():
@@ -248,20 +161,16 @@ async def upload_zip(
             # Store vectors
             store_case_chunks(all_chunks, title_number)
 
-            # Build download URL
+            # Upload processed PDF to Supabase Storage, register the storage
+            # path (not a URL — signed URLs are minted on read, see database.get_case)
             cleaned = make_clean_filename(doc["filename"])
+            storage_path = storage.upload_document(title_number, cleaned, doc["pdf_bytes"])
 
-            file_url = (
-                f"{os.getenv('BACKEND_URL', 'https://convey-ai-production-be43.up.railway.app')}"
-                f"/view-pdf/{cleaned}"
-            )
-
-            # Register in Supabase
             add_document(
                 title_number=title_number,
                 doc_type=doc["doc_type"],
                 filename=doc["filename"],
-                file_url=file_url
+                file_url=storage_path
             )
 
             results.append({
@@ -326,23 +235,21 @@ async def upload_pdf(
     # Step 4: Store vectors
     store_case_chunks(all_chunks, title_number)
 
-    # Step 5: Build download URL
+    # Step 5: Upload processed PDF to Supabase Storage
     cleaned = make_clean_filename(file.filename)
-
-    download_url = (
-        f"{os.getenv('BACKEND_URL', 'https://convey-ai-production-be43.up.railway.app')}"
-        f"/view-pdf/{cleaned}"
-    )
+    storage_path = storage.upload_document(title_number, cleaned, pdf_bytes)
+    download_url = storage.get_signed_url(storage_path)
 
     # Step 6: Ensure case exists
     create_case(title_number)
 
-    # Step 7: Register document
+    # Step 7: Register document — stores the storage path, not the signed URL,
+    # since signed URLs expire. Fresh ones are minted on read (database.get_case).
     add_document(
         title_number=title_number,
         doc_type=doc_type,
         filename=file.filename,
-        file_url=download_url
+        file_url=storage_path
     )
 
     return {
@@ -429,88 +336,10 @@ async def get_case_route(title_number: str, _user=Depends(require_auth)):
     result = get_case(title_number.upper())
     return result
 
-# @app.delete("/cases/{title_number}/documents/{document_id}")
-# async def delete_document_route(title_number: str, document_id: str):
-#     """
-#     Deletes a document completely:
-#     1. Removes record from Supabase
-#     2. Deletes OCR'd PDF from disk
-#     3. Removes chunks from ChromaDB
-#     """
-#     # Step 1: Delete from Supabase and get the filename back
-#     result = delete_document(document_id, title_number)
-#     if not result["success"]:
-#         return result
-
-#     # Step 2: Delete the OCR'd PDF file from disk
-#     cleaned = make_clean_filename(result["filename"])
-#     file_path = f"processed_pdfs/{cleaned}"
-#     if os.path.exists(file_path):
-#         os.remove(file_path)
-#         print(f"Deleted file: {file_path}")
-
-#     # Step 3: Delete all ChromaDB chunks for this case document
-#     try:
-#         all_chunks = case_collection.get(where={"title_number": title_number})
-#         if all_chunks["ids"]:
-#             case_collection.delete(ids=all_chunks["ids"])
-#             print(f"Deleted {len(all_chunks['ids'])} chunks from ChromaDB")
-#     except Exception as e:
-#         print(f"ChromaDB cleanup error: {e}")
-
-#     return {"success": True, "message": "Document deleted completely"}
-
-# @app.delete("/cases/{title_number}/documents/{document_id}")
-# async def delete_document_route(title_number: str, document_id: str):
-#     """
-#     Deletes a document completely:
-#     1. Removes record from Supabase (returns the original filename)
-#     2. Deletes OCR'd PDF from disk using DATA_DIR
-#     3. Removes ONLY this document's chunks from ChromaDB (filter by "source" key)
-#     """
-#     # Normalise title number to uppercase for consistent ChromaDB and Supabase lookups
-#     tn = title_number.upper()
-
-#     # Step 1: Delete from Supabase — returns the original filename so we know what to clean up
-#     result = delete_document(document_id, tn)
-#     if not result["success"]:
-#         return result
-
-#     original_filename = result["filename"]  # e.g. "Contract Pack.pdf"
-
-#     # Step 2: Delete the OCR'd PDF from disk
-#     # FIX: use DATA_DIR so this works on Railway volume, not just locally
-#     cleaned = make_clean_filename(original_filename)
-#     file_path = f"{DATA_DIR}/processed_pdfs/{cleaned}"
-#     if os.path.exists(file_path):
-#         os.remove(file_path)
-#         print(f"Deleted file: {file_path}")
-#     else:
-#         print(f"File not found on disk (already deleted?): {file_path}")
-
-#     # Step 3: Delete ONLY this document's chunks from ChromaDB
-#     # FIX: filter by BOTH title_number AND "source" (the filename key set in chunker.py)
-#     # Previously this only filtered by title_number — wiping ALL docs in the case!
-#     try:
-#         doc_chunks = case_collection.get(
-#             where={"$and": [
-#                 {"title_number": tn},
-#                 {"source": original_filename}  # "source" is set in chunker.py metadata
-#             ]}
-#         )
-#         if doc_chunks["ids"]:
-#             case_collection.delete(ids=doc_chunks["ids"])
-#             print(f"Deleted {len(doc_chunks['ids'])} chunks from ChromaDB for: {original_filename}")
-#         else:
-#             print(f"No ChromaDB chunks found for: {original_filename}")
-#     except Exception as e:
-#         print(f"ChromaDB cleanup error: {e}")
-
-#     return {"success": True, "message": f"Document '{original_filename}' deleted completely"}
 @app.delete("/cases/{title_number}/documents/{document_id}")
 async def delete_document_route(title_number: str, document_id: str, _user=Depends(require_auth)):
     """
-    Deletes a document completely from Supabase, Disk, and ChromaDB.
+    Deletes a document completely from Supabase, Storage, and ChromaDB.
     """
     tn = title_number.upper()
 
@@ -521,12 +350,9 @@ async def delete_document_route(title_number: str, document_id: str, _user=Depen
 
     original_filename = result["filename"]
 
-    # Step 2: Delete the OCR'd PDF from disk
+    # Step 2: Delete the processed PDF from Supabase Storage
     cleaned = make_clean_filename(original_filename)
-    file_path = f"{DATA_DIR}/processed_pdfs/{cleaned}"
-    if os.path.exists(file_path):
-        os.remove(file_path)
-        print(f"Deleted file: {file_path}")
+    storage.delete_document(f"{tn}/{cleaned}")
 
     # Step 3: Delete ONLY this document's chunks from ChromaDB
     try:

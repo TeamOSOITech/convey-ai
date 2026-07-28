@@ -5,7 +5,7 @@
 #   in GLOBAL_RULE_POOL below. There are NO form-specific silos (TA6/TA10/TA13).
 #
 # Pipeline (per document):
-#   1. resolve_pdf_path()              → find the processed PDF file on disk
+#   1. fetch_pdf_bytes()               → download the processed PDF from Supabase Storage
 #   2. pdf_to_images()                 → render each PDF page to a PIL Image via PyMuPDF
 #   3. classify_document()             → identify form type for context labelling only
 #   4. evaluate_document_vision()      → send page IMAGES + GLOBAL_RULE_POOL to Gemini
@@ -31,6 +31,7 @@ import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
 from dotenv import load_dotenv
 from embeddings import case_collection, format_collection
+import storage
 
 load_dotenv()
 
@@ -78,14 +79,12 @@ def generate_with_fallback(contents) -> str:
     raise Exception(f"All fallback models failed. Last error: {last_error}")
 
 
-# ── File Path Resolution ──────────────────────────────────────────────────────
-# Processed PDFs are stored at {DATA_DIR}/processed_pdfs/{filename}
-# DATA_DIR defaults to "./data" locally and is set to "/app/data" on Railway
-DATA_DIR = os.getenv("DATA_DIR", "./data")
+# ── PDF Retrieval ──────────────────────────────────────────────────────────────
+# Processed PDFs live in Supabase Storage under {title_number}/{cleaned_filename}
 
-def resolve_pdf_path(filename: str) -> str:
+def fetch_pdf_bytes(title_number: str, filename: str) -> bytes:
     """
-    Returns the absolute path to the processed PDF file on disk.
+    Downloads the processed PDF's bytes from Supabase Storage.
     Converts the original filename to the cleaned '_ocr.pdf' format used by the backend.
     Returns None if the file does not exist (triggers text fallback).
     """
@@ -96,13 +95,12 @@ def resolve_pdf_path(filename: str) -> str:
     elif cleaned.endswith(".pdf"):
         cleaned = cleaned[:-4] + "_ocr.pdf"
 
-    path = os.path.join(DATA_DIR, "processed_pdfs", cleaned)
-    return path if os.path.exists(path) else None
+    return storage.fetch_document_bytes(f"{title_number}/{cleaned}")
 
 
 # ── PDF to Images ─────────────────────────────────────────────────────────────
 
-def pdf_to_images(pdf_path: str, dpi: int = 120, max_pages: int = 40) -> list:
+def pdf_to_images(pdf_bytes: bytes, dpi: int = 120, max_pages: int = 40) -> list:
     """
     Renders each page of a PDF as a PIL Image using PyMuPDF.
 
@@ -112,7 +110,7 @@ def pdf_to_images(pdf_path: str, dpi: int = 120, max_pages: int = 40) -> list:
     max_pages=40 is a safety cap — TA6/TA10/TA13 forms are typically 5–16 pages.
     Returns a list of PIL Image objects, one per page.
     """
-    doc = fitz.open(pdf_path)
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     images = []
     scale = dpi / 72.0          # PyMuPDF default is 72 DPI
     mat = fitz.Matrix(scale, scale)
@@ -506,20 +504,20 @@ def run_title_check(filename: str, title_number: str) -> dict:
     """
     print(f"[TitleCheck] Starting check for '{filename}' in case {title_number}")
 
-    # Step 1: Try to find the processed PDF on disk for Vision evaluation
-    pdf_path = resolve_pdf_path(filename)
+    # Step 1: Try to fetch the processed PDF from Supabase Storage for Vision evaluation
+    pdf_bytes = fetch_pdf_bytes(title_number, filename)
 
     # Step 2: Classify document type — for context labelling, not rule filtering
-    # We still need some text for classification if pdf_path not found
+    # We still need some text for classification if pdf_bytes not found
     # so always fetch chunks (used as fallback text anyway)
     full_text = get_all_chunks_text(title_number, filename)
     form_type = classify_document(full_text or "", filename)
     print(f"[TitleCheck] Document classified as: {form_type}")
 
     # Step 3: Evaluate — Vision primary, text fallback
-    if pdf_path:
-        print(f"[TitleCheck] PDF found at {pdf_path} — using Gemini Vision")
-        page_images = pdf_to_images(pdf_path)
+    if pdf_bytes:
+        print(f"[TitleCheck] PDF fetched from Storage — using Gemini Vision")
+        page_images = pdf_to_images(pdf_bytes)
         if page_images:
             triggered = evaluate_document_vision(page_images, form_type, filename)
             evaluation_mode = "vision"
@@ -529,16 +527,16 @@ def run_title_check(filename: str, title_number: str) -> dict:
             triggered = evaluate_document_text(full_text, form_type, filename)
             evaluation_mode = "text-fallback"
     else:
-        # PDF not on disk (e.g. Railway restarted and wiped ephemeral storage)
+        # PDF not in Storage (e.g. never uploaded through the current pipeline)
         # Fall back to OCR text from ChromaDB
         if not full_text:
             return {
                 "error": (
-                    f"Could not find '{filename}' on disk or in ChromaDB. "
+                    f"Could not find '{filename}' in Storage or ChromaDB. "
                     f"Please re-upload and process the document."
                 )
             }
-        print("[TitleCheck] PDF not on disk — falling back to OCR text")
+        print("[TitleCheck] PDF not in Storage — falling back to OCR text")
         triggered = evaluate_document_text(full_text, form_type, filename)
         evaluation_mode = "text-fallback"
 
