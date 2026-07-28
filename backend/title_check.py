@@ -81,14 +81,19 @@ def generate_with_fallback(contents) -> str:
 
 
 # ── PDF Retrieval ──────────────────────────────────────────────────────────────
-# Processed PDFs live in Supabase Storage under {title_number}/{cleaned_filename}
+# Processed PDFs live in Supabase Storage under {case_id}/{cleaned_filename}
+# (case_id, not title_number — see storage.py for why)
 
 def fetch_pdf_bytes(title_number: str, filename: str) -> bytes:
     """
     Downloads the processed PDF's bytes from Supabase Storage.
     Converts the original filename to the cleaned '_ocr.pdf' format used by the backend.
-    Returns None if the file does not exist (triggers text fallback).
+    Returns None if the case/file does not exist (triggers text fallback).
     """
+    case_id = get_case_id(title_number)
+    if not case_id:
+        return None
+
     # Replicate the make_clean_filename logic from main.py to avoid circular imports
     cleaned = filename.replace(" ", "_").replace(",", "").replace("(", "").replace(")", "")
     if cleaned.endswith(".PDF"):
@@ -96,7 +101,7 @@ def fetch_pdf_bytes(title_number: str, filename: str) -> bytes:
     elif cleaned.endswith(".pdf"):
         cleaned = cleaned[:-4] + "_ocr.pdf"
 
-    return storage.fetch_document_bytes(f"{title_number}/{cleaned}")
+    return storage.fetch_document_bytes(f"{case_id}/{cleaned}")
 
 
 # ── PDF to Images ─────────────────────────────────────────────────────────────

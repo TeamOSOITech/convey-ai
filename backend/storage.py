@@ -6,6 +6,14 @@
 # get_signed_url() to get something fetchable. This is the seam to swap
 # for S3 later: every call site outside this file only knows about
 # upload_document / get_signed_url / fetch_document_bytes / delete_document.
+#
+# Namespaced by case_id (not title_number): title_number is only unique
+# while a case row exists. If a case is ever deleted and a new one created
+# with the same title_number, a title_number-based path would collide with
+# — and could silently overwrite — the deleted case's orphaned files, since
+# Storage has no FK relationship to Postgres and isn't touched by the
+# `on delete cascade` on case_id. case_id is fresh per case row regardless
+# of title_number reuse, so that collision can't happen.
 
 import os
 from database import supabase
@@ -26,9 +34,9 @@ def _ensure_bucket():
 _ensure_bucket()
 
 
-def upload_document(title_number: str, cleaned_filename: str, pdf_bytes: bytes) -> str:
-    """Uploads bytes to {title_number}/{cleaned_filename}. Returns the storage path."""
-    path = f"{title_number}/{cleaned_filename}"
+def upload_document(case_id: str, cleaned_filename: str, pdf_bytes: bytes) -> str:
+    """Uploads bytes to {case_id}/{cleaned_filename}. Returns the storage path."""
+    path = f"{case_id}/{cleaned_filename}"
     supabase.storage.from_(BUCKET_NAME).upload(
         path,
         pdf_bytes,

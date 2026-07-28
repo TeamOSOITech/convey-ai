@@ -171,7 +171,7 @@ async def upload_zip(
             # Upload the OCR'd PDF (not the raw upload) to Supabase Storage, register the
             # storage path (not a URL — signed URLs are minted on read, see database.get_case)
             cleaned = make_clean_filename(doc["filename"])
-            storage_path = storage.upload_document(title_number, cleaned, ocr_result["ocr_pdf_bytes"])
+            storage_path = storage.upload_document(case_id, cleaned, ocr_result["ocr_pdf_bytes"])
 
             add_document(
                 title_number=title_number,
@@ -248,7 +248,7 @@ async def upload_pdf(
 
     # Step 6: Upload the OCR'd PDF (not the raw upload) to Supabase Storage
     cleaned = make_clean_filename(file.filename)
-    storage_path = storage.upload_document(title_number, cleaned, ocr_result["ocr_pdf_bytes"])
+    storage_path = storage.upload_document(case_id, cleaned, ocr_result["ocr_pdf_bytes"])
     download_url = storage.get_signed_url(storage_path)
 
     # Step 7: Register document — stores the storage path, not the signed URL,
@@ -362,14 +362,15 @@ async def delete_document_route(title_number: str, document_id: str, _user=Depen
         return result
 
     original_filename = result["filename"]
+    case_id = get_case_id(tn)
 
     # Step 2: Delete the processed PDF from Supabase Storage
-    cleaned = make_clean_filename(original_filename)
-    storage.delete_document(f"{tn}/{cleaned}")
+    if case_id:
+        cleaned = make_clean_filename(original_filename)
+        storage.delete_document(f"{case_id}/{cleaned}")
 
     # Step 3: Delete ONLY this document's chunks from the vector store
     try:
-        case_id = get_case_id(tn)
         if case_id:
             delete_case_chunks(case_id, original_filename)
             print(f"Successfully deleted vector chunks for: {original_filename}")
