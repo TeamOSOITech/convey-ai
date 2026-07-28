@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List
 from embeddings import get_document_chunks
+from database import get_case_id
 from auth_utils import require_auth
 
 router = APIRouter()
@@ -73,11 +74,12 @@ async def form_extract_route(req: FormExtractRequest, _user=Depends(require_auth
             )
 
         tn = req.title_number.upper()
+        case_id = get_case_id(tn)
 
         # Gather text from ALL selected files
         all_text_parts = []
         for filename in req.filenames:
-            chunks = get_document_chunks(tn, filename)
+            chunks = get_document_chunks(case_id, filename) if case_id else []
             if not chunks:
                 all_text_parts.append(f"[[ {filename} — no content found in database ]]")
                 continue

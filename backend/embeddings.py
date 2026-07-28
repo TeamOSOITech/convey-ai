@@ -19,13 +19,16 @@ model = SentenceTransformer(
 
 # ── Case document chunks (table: document_chunks) ────────────────────────────
 
-def store_case_chunks(chunks: list, title_number: str):
+def store_case_chunks(chunks: list, title_number: str, case_id: str):
     """
     Converts document chunks to embeddings and stores them in Postgres.
+    case_id is the actual relational key; title_number is kept alongside it
+    purely as a denormalised, human-readable field (not used for filtering).
 
     Each chunk already contains:
         - source
         - title_number
+        - case_id
         - page
         - bbox
         - chunk_index
@@ -52,6 +55,7 @@ def store_case_chunks(chunks: list, title_number: str):
 
         rows.append({
             "id": row_id,
+            "case_id": case_id,
             "title_number": title_number,
             "source": metadata["source"],
             "page": metadata.get("page"),
@@ -78,6 +82,7 @@ def _row_to_chunk(row: dict) -> dict:
         "metadata": {
             "source": row["source"],
             "title_number": row["title_number"],
+            "case_id": row.get("case_id"),
             "page": row["page"],
             "bbox": row["bbox"],
             "chunk_index": row["chunk_index"],
@@ -88,7 +93,7 @@ def _row_to_chunk(row: dict) -> dict:
 
 def query_case_chunks(
     query_embedding: list,
-    title_number: str,
+    case_id: str,
     source: str = None,
     exclude_source: str = None,
     n_results: int = 10
@@ -100,7 +105,7 @@ def query_case_chunks(
     """
     result = supabase.rpc("match_document_chunks", {
         "query_embedding": query_embedding,
-        "match_title_number": title_number.upper(),
+        "match_case_id": case_id,
         "match_source": source,
         "exclude_source": exclude_source,
         "match_count": n_results,
@@ -109,14 +114,14 @@ def query_case_chunks(
     return [_row_to_chunk(row) for row in result.data]
 
 
-def get_document_chunks(title_number: str, source: str) -> list:
+def get_document_chunks(case_id: str, source: str) -> list:
     """
     Fetches every chunk for one document, already in reading order.
     Replaces the old "get() everything then sort by chunk_index" pattern.
     """
     result = supabase.table("document_chunks")\
         .select("*")\
-        .eq("title_number", title_number.upper())\
+        .eq("case_id", case_id)\
         .eq("source", source)\
         .order("chunk_index")\
         .execute()
@@ -124,11 +129,11 @@ def get_document_chunks(title_number: str, source: str) -> list:
     return [_row_to_chunk(row) for row in result.data]
 
 
-def delete_case_chunks(title_number: str, source: str):
+def delete_case_chunks(case_id: str, source: str):
     """Deletes every chunk belonging to one document."""
     supabase.table("document_chunks")\
         .delete()\
-        .eq("title_number", title_number.upper())\
+        .eq("case_id", case_id)\
         .eq("source", source)\
         .execute()
 

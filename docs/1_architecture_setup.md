@@ -192,7 +192,7 @@ These are the secret keys that connect the application to external services. The
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | `https://xxxx.supabase.co` | Same Supabase URL — safe to expose (starts with `NEXT_PUBLIC_`) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `eyJ...` | Supabase **anon** key — safe for browser use (limited permissions) |
-| `NEXT_PUBLIC_API_URL` | `https://convey-ai-production-be43.up.railway.app` | The Railway backend URL the frontend calls |
+| `NEXT_PUBLIC_BACKEND_URL` | `https://convey-ai-production-be43.up.railway.app` | The Railway backend URL the frontend calls |
 
 > **Important distinction:** The backend uses the **service role** key (full database access). The frontend uses the **anon** key (limited to public-facing operations like auth). Never swap these.
 
@@ -385,7 +385,7 @@ Create `frontend/.env.local` with:
 ```env
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
 ```
 
 Start the frontend:

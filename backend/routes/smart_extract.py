@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from embeddings import get_document_chunks
+from database import get_case_id
 from auth_utils import require_auth
 
 router = APIRouter()
@@ -31,9 +32,10 @@ async def smart_extract_route(req: SmartExtractRequest, _user=Depends(require_au
         from title_report import gemini_model
 
         tn = req.title_number.upper()
+        case_id = get_case_id(tn)
 
         # Fetch every chunk for this specific file, already in reading order
-        chunks = get_document_chunks(tn, req.filename)
+        chunks = get_document_chunks(case_id, req.filename) if case_id else []
 
         if not chunks:
             return JSONResponse(

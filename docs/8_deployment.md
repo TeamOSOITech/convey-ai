@@ -100,7 +100,7 @@ The frontend only has a **login** page, no sign-up flow (`app/login/page.js` cal
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Project URL from Step 5 |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `anon` key from Step 5 |
-| `NEXT_PUBLIC_API_URL` | The Railway URL from Step 6 |
+| `NEXT_PUBLIC_BACKEND_URL` | The Railway URL from Step 6 |
 
 4. Deploy.
 
@@ -153,6 +153,6 @@ In order, on the deployed frontend URL:
 | Backend (Railway) | `DEV_MODE` | `false` in production, `true` only for local dev |
 | Frontend (Vercel) | `NEXT_PUBLIC_SUPABASE_URL` | Same as backend's `SUPABASE_URL` |
 | Frontend (Vercel) | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase → Project Settings → API → `anon` `public` |
-| Frontend (Vercel) | `NEXT_PUBLIC_API_URL` | The Railway backend's public URL |
+| Frontend (Vercel) | `NEXT_PUBLIC_BACKEND_URL` | The Railway backend's public URL |
 
 See `docs/1_architecture_setup.md` §1.5 for the same table framed for local development instead of a fresh cloud environment.

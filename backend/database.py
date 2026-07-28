@@ -31,6 +31,17 @@ def create_case(title_number: str) -> dict:
     return {"success": True, "case": result.data[0], "created": True}
 
 
+def get_case_id(title_number: str) -> str:
+    """
+    Looks up a case's UUID by title_number. Used by callers that only have
+    title_number in scope (routes, chatbot, etc.) but need case_id to filter
+    document_chunks — case_id is the real relational key, title_number is
+    just the public-facing lookup. Returns None if the case doesn't exist.
+    """
+    result = supabase.table("cases").select("id").eq("title_number", title_number).execute()
+    return result.data[0]["id"] if result.data else None
+
+
 def add_document(title_number: str, doc_type: str, filename: str, file_url: str = None) -> dict:
     """
     Adds a document record to a case
@@ -78,10 +89,11 @@ def get_case(title_number: str) -> dict:
     if not case.data:
         return {"success": False, "error": "Case not found"}
 
-    # Get all documents for this case
+    # Get all documents for this case — joined by case_id (the real FK),
+    # not title_number
     documents = supabase.table("case_documents")\
         .select("*")\
-        .eq("title_number", title_number)\
+        .eq("case_id", case.data[0]["id"])\
         .execute()
 
     docs = documents.data

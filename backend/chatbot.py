@@ -5,6 +5,7 @@ import google.generativeai as genai
 from groq import Groq
 from dotenv import load_dotenv
 from embeddings import query_case_chunks, search_formats, model
+from database import get_case_id
 import re
 
 load_dotenv()
@@ -59,19 +60,19 @@ def _call_groq(model_name: str, system_prompt: str, conversation: list, user_mes
     )
     return response.choices[0].message.content.strip()
 
-def get_current_document_context(query_embedding: list, title_number: str, current_document: str, max_chunks: int = 5) -> list:
+def get_current_document_context(query_embedding: list, case_id: str, current_document: str, max_chunks: int = 5) -> list:
     """Fetches chunks STRICTLY from the currently open document."""
     current_document = current_document.strip()
     return query_case_chunks(
-        query_embedding, title_number,
+        query_embedding, case_id,
         source=current_document,
         n_results=max_chunks
     )
 
-def get_diverse_context(query_embedding: list, title_number: str, max_per_doc: int = 4, total_max: int = 15, exclude_document: str = None) -> list:
+def get_diverse_context(query_embedding: list, case_id: str, max_per_doc: int = 4, total_max: int = 15, exclude_document: str = None) -> list:
     """Fetches chunks from MULTIPLE documents, excluding the open document."""
     chunks = query_case_chunks(
-        query_embedding, title_number,
+        query_embedding, case_id,
         exclude_source=exclude_document.strip() if exclude_document else None,
         n_results=50
     )
@@ -105,29 +106,31 @@ def ask_question(
     including page and bounding boxes for PDF highlighting.
     """
     query_embedding = model.encode([question]).tolist()[0]
+    case_id = get_case_id(title_number)
 
     # ----------------------------------------------------------
     # Search the vector store - Context Weighted Retrieval
     # ----------------------------------------------------------
     current_doc_chunks = []
     other_doc_chunks = []
-    
-    if current_document:
-        current_doc_chunks = get_current_document_context(
-            query_embedding, title_number, current_document, max_chunks=5
-        )
-        other_doc_chunks = get_diverse_context(
-            query_embedding, title_number, max_per_doc=3, total_max=10, 
-            exclude_document=current_document
-        )
-    else:
-        other_doc_chunks = get_diverse_context(
-            query_embedding, title_number, max_per_doc=4, total_max=15
-        )
-    
+
+    if case_id:
+        if current_document:
+            current_doc_chunks = get_current_document_context(
+                query_embedding, case_id, current_document, max_chunks=5
+            )
+            other_doc_chunks = get_diverse_context(
+                query_embedding, case_id, max_per_doc=3, total_max=10,
+                exclude_document=current_document
+            )
+        else:
+            other_doc_chunks = get_diverse_context(
+                query_embedding, case_id, max_per_doc=4, total_max=15
+            )
+
     # Combine chunks
     all_chunks = current_doc_chunks + other_doc_chunks
-    
+
     if not all_chunks:
         return {
             "type": "question",
@@ -241,6 +244,7 @@ Remember: Extract facts. Cite every claim with [C#]. Never invent. Be precise.
 def raise_enquiry(issue: str, title_number: str, history: list = [], current_document: str = None) -> dict:
     """Generates case-specific enquiry text with Context-Weighted RAG."""
     query_embedding = model.encode([issue]).tolist()[0]
+    case_id = get_case_id(title_number)
 
     # 1. Fetch standard format wording
     format_matches = search_formats(issue, n_results=1)
@@ -258,18 +262,19 @@ def raise_enquiry(issue: str, title_number: str, history: list = [], current_doc
     current_doc_chunks = []
     other_doc_chunks = []
 
-    if current_document:
-        current_doc_chunks = get_current_document_context(
-            query_embedding, title_number, current_document, max_chunks=4
-        )
-        other_doc_chunks = get_diverse_context(
-            query_embedding, title_number, max_per_doc=2, total_max=6, 
-            exclude_document=current_document
-        )
-    else:
-        other_doc_chunks = get_diverse_context(
-            query_embedding, title_number, max_per_doc=3, total_max=8
-        )
+    if case_id:
+        if current_document:
+            current_doc_chunks = get_current_document_context(
+                query_embedding, case_id, current_document, max_chunks=4
+            )
+            other_doc_chunks = get_diverse_context(
+                query_embedding, case_id, max_per_doc=2, total_max=6,
+                exclude_document=current_document
+            )
+        else:
+            other_doc_chunks = get_diverse_context(
+                query_embedding, case_id, max_per_doc=3, total_max=8
+            )
 
     current_context = "\n\n".join([c["text"] for c in current_doc_chunks])
     other_context = "\n\n".join([c["text"] for c in other_doc_chunks])

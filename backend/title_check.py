@@ -31,6 +31,7 @@ import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted, GoogleAPIError
 from dotenv import load_dotenv
 from embeddings import get_document_chunks, get_enquiry_template
+from database import get_case_id
 import storage
 
 load_dotenv()
@@ -446,7 +447,10 @@ def get_all_chunks_text(title_number: str, filename: str) -> str:
     full document text in reading order. We chunk on ingest but need full text
     for the Gemini evaluation step.
     """
-    chunks = get_document_chunks(title_number, filename)
+    case_id = get_case_id(title_number)
+    if not case_id:
+        return ""
+    chunks = get_document_chunks(case_id, filename)
     if not chunks:
         return ""
     return "\n\n".join(c["text"] for c in chunks)

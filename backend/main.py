@@ -9,9 +9,10 @@ from embeddings import (
     delete_case_chunks, query_case_chunks
 )
 from chatbot import ask_question, raise_enquiry
-from database import create_case, add_document, get_case, get_all_cases, delete_document, supabase
+from database import create_case, add_document, get_case, get_all_cases, delete_document, get_case_id, supabase
 import storage
 import os
+import shutil
 from pydantic import BaseModel
 from typing import List, Optional
 from zip_processor import extract_zip
@@ -21,6 +22,15 @@ from fastapi.responses import JSONResponse
 from title_report import generate_title_report
 from title_check import run_title_check
 from auth_utils import require_auth
+
+# One-time cleanup — removes the orphaned ChromaDB directory left behind by
+# the pre-pgvector setup. Nothing reads/writes it anymore (see embeddings.py).
+# Runs once per container boot; a no-op once the directory is actually gone.
+# Safe to delete this block once you've confirmed it ran on Railway.
+_legacy_chroma_dir = os.path.join(os.getenv("DATA_DIR", "./data"), "chroma_db")
+if os.path.exists(_legacy_chroma_dir):
+    shutil.rmtree(_legacy_chroma_dir, ignore_errors=True)
+    print(f"[Cleanup] Removed orphaned ChromaDB directory: {_legacy_chroma_dir}")
 
 app = FastAPI()
 
@@ -116,8 +126,8 @@ async def upload_zip(
             "error": "No PDF files found in ZIP"
         }
 
-    # Step 3: Ensure case exists
-    create_case(title_number)
+    # Step 3: Ensure case exists — resolve case_id once, reused for every file below
+    case_id = create_case(title_number)["case"]["id"]
 
     results = []
 
@@ -149,13 +159,14 @@ async def upload_zip(
                     blocks=page["blocks"],
                     source_filename=doc["filename"],
                     title_number=title_number,
+                    case_id=case_id,
                     page=page["page"]
                 )
 
                 all_chunks.extend(page_chunks)
 
             # Store vectors
-            store_case_chunks(all_chunks, title_number)
+            store_case_chunks(all_chunks, title_number, case_id)
 
             # Upload the OCR'd PDF (not the raw upload) to Supabase Storage, register the
             # storage path (not a URL — signed URLs are minted on read, see database.get_case)
@@ -209,35 +220,36 @@ async def upload_pdf(
     """Full pipeline: PDF → OCR → Chunk → Embed → Store"""
     title_number = title_number.upper()
     pdf_bytes = await file.read()
-    
-    # Step 2: OCR
+
+    # Step 2: Ensure case exists — resolved early so case_id is available for chunking below
+    case_id = create_case(title_number)["case"]["id"]
+
+    # Step 3: OCR
     ocr_result = process_pdf(pdf_bytes, file.filename)
     if not ocr_result["success"]:
         return ocr_result
-    
-    # Step 3: Chunk every page with page dimensions
+
+    # Step 4: Chunk every page with page dimensions
     all_chunks = []
     for page_data in ocr_result["pages"]:
         page_chunks = chunk_page(
             blocks=page_data["blocks"],
             source_filename=file.filename,
             title_number=title_number,
+            case_id=case_id,
             page=page_data["page"],
             page_width=page_data.get("width", 1.0),
             page_height=page_data.get("height", 1.0)
         )
         all_chunks.extend(page_chunks)
 
-    # Step 4: Store vectors
-    store_case_chunks(all_chunks, title_number)
+    # Step 5: Store vectors
+    store_case_chunks(all_chunks, title_number, case_id)
 
-    # Step 5: Upload the OCR'd PDF (not the raw upload) to Supabase Storage
+    # Step 6: Upload the OCR'd PDF (not the raw upload) to Supabase Storage
     cleaned = make_clean_filename(file.filename)
     storage_path = storage.upload_document(title_number, cleaned, ocr_result["ocr_pdf_bytes"])
     download_url = storage.get_signed_url(storage_path)
-
-    # Step 6: Ensure case exists
-    create_case(title_number)
 
     # Step 7: Register document — stores the storage path, not the signed URL,
     # since signed URLs expire. Fresh ones are minted on read (database.get_case).
@@ -357,8 +369,10 @@ async def delete_document_route(title_number: str, document_id: str, _user=Depen
 
     # Step 3: Delete ONLY this document's chunks from the vector store
     try:
-        delete_case_chunks(tn, original_filename)
-        print(f"Successfully deleted vector chunks for: {original_filename}")
+        case_id = get_case_id(tn)
+        if case_id:
+            delete_case_chunks(case_id, original_filename)
+            print(f"Successfully deleted vector chunks for: {original_filename}")
     except Exception as e:
         print(f"Vector store cleanup error: {e}")
 
@@ -372,9 +386,12 @@ async def debug_chunks(title_number: str):
     """
     if not DEV_MODE:
         raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production")
+    case_id = get_case_id(title_number.upper())
+    if not case_id:
+        return {"ids": [], "metadatas": []}
     result = supabase.table("document_chunks")\
         .select("id, title_number, source, page, chunk_index")\
-        .eq("title_number", title_number.upper())\
+        .eq("case_id", case_id)\
         .limit(5)\
         .execute()
     return {
@@ -394,19 +411,20 @@ async def debug_query(title_number: str, question: str, current_document: str = 
 
     query_embedding = model.encode([question]).tolist()
     tn = title_number.upper()
+    case_id = get_case_id(tn)
 
     # What it finds in the current doc
     current_chunks = []
-    if current_document:
+    if current_document and case_id:
         current_document = current_document.strip()
-        current_chunks = query_case_chunks(query_embedding, tn, source=current_document, n_results=3)
+        current_chunks = query_case_chunks(query_embedding, case_id, source=current_document, n_results=3)
 
     # What it finds in other docs — explicitly excludes the active doc
     other_chunks = query_case_chunks(
-        query_embedding, tn,
+        query_embedding, case_id,
         exclude_source=current_document.strip() if current_document else None,
         n_results=3
-    )
+    ) if case_id else []
 
     return {
         "title_number_queried": tn,
@@ -422,9 +440,12 @@ async def debug_sources(title_number: str):
     """Debug route — gated behind DEV_MODE env var. Set DEV_MODE=true locally."""
     if not DEV_MODE:
         raise HTTPException(status_code=403, detail="Debug endpoints are disabled in production")
+    case_id = get_case_id(title_number.upper())
+    if not case_id:
+        return {"title_number": title_number.upper(), "sources": []}
     result = supabase.table("document_chunks")\
         .select("source")\
-        .eq("title_number", title_number.upper())\
+        .eq("case_id", case_id)\
         .execute()
     sources = list(set(row["source"] for row in result.data))
     return {"title_number": title_number.upper(), "sources": sources}
@@ -456,11 +477,12 @@ async def find_page(title_number: str, filename: str, query: str):
     CHUNKS_PER_PAGE = 5
 
     tn = title_number.upper()
+    case_id = get_case_id(tn)
 
     # Fetch every chunk for this specific document, already in reading order
     chunks_with_meta = [
-        (c["text"], c["metadata"]) for c in get_document_chunks(tn, filename)
-    ]
+        (c["text"], c["metadata"]) for c in get_document_chunks(case_id, filename)
+    ] if case_id else []
 
     # If nothing found, default to page 1 gracefully
     if not chunks_with_meta:

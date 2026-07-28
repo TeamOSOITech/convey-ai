@@ -666,6 +666,7 @@ import os
 import google.generativeai as genai
 from dotenv import load_dotenv
 from embeddings import get_document_chunks
+from database import get_case_id
 
 load_dotenv()
 
@@ -829,11 +830,12 @@ DOCUMENT TEXT:
 
 def generate_title_report(title_number: str, selected_filenames: list) -> dict:
     title_number = title_number.upper()
+    case_id = get_case_id(title_number)
     report_documents = []
 
     for filename in selected_filenames:
         filename = filename.strip()
-        chunks = get_document_chunks(title_number, filename)
+        chunks = get_document_chunks(case_id, filename) if case_id else []
 
         if not chunks:
             report_documents.append({

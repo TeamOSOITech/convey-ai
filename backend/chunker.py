@@ -12,6 +12,7 @@ def chunk_page(
     blocks: list,
     source_filename: str,
     title_number: str,
+    case_id: str,
     page: int,
     page_width: float = 1.0,
     page_height: float = 1.0
@@ -19,11 +20,12 @@ def chunk_page(
     """
     Splits one PDF page into chunks while preserving the bounding
     box of each chunk for later highlighting.
-    
+
     Args:
         blocks: List of text blocks with bbox coordinates
         source_filename: Name of the source PDF
-        title_number: Case reference
+        title_number: Case reference — kept as a denormalised, readable field only
+        case_id: Case UUID — the actual relational key used for storage/queries
         page: Page number
         page_width: Width of the page in points
         page_height: Height of the page in points
@@ -85,6 +87,7 @@ def chunk_page(
             "metadata": {
                 "source": source_filename,
                 "title_number": title_number,
+                "case_id": case_id,
                 "page": page,
                 "bbox": bbox,
                 "chunk_index": i,
